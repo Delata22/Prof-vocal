@@ -102,7 +102,8 @@ class Ears:
         termes = ", de ".join(words[:12])
         prompt = f"Bonjour. Aujourd'hui, en cours, on parle de {self.topic}" + (f", de {termes}." if termes else ".")
         if maths:   # dictée d'une ligne de calcul : un prompt de calcul, sinon Whisper recopie la phrase de cours
-            prompt = "D de 4 égale un seizième fois moins deux fois neuf, égale moins 1.12. Sigma 2 égale racine de 2 fois sigma 1."
+            prompt = ("Soit n un entier. Soit x un réel. Pour tout i, f de x égale n plus 1. "
+                      "D de 4 égale un seizième fois moins deux fois neuf, égale moins 1.12. Sigma 2 égale racine de 2 fois sigma 1.")
         segs, _ = self.m.transcribe(audio, language="fr", beam_size=5, vad_filter=False,
                                     condition_on_previous_text=False, initial_prompt=prompt)
         segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
@@ -379,6 +380,12 @@ Réponds uniquement par cette ligne LaTeX : pas de $, pas de bloc de code, pas d
 Lettres grecques en commandes (\sigma), indices avec _, « racine de » → \sqrt{}, « sur » ou « divisé par » → \frac{}{},
 « fois » → \, ou \times, « environ égal » → \approx, « laplacien » → \nabla^2, « dérivée partielle » → \partial.
 Nombres à virgule : point décimal (« un virgule cinq » → 1.5), en particulier dans un vecteur ou un n-uplet : (1.5, -0.5), jamais (1,5, -0,5).
+La reconnaissance vocale écrit souvent le NOM d'une lettre comme un mot qui sonne pareil : retrouve la lettre.
+« haine », « aine », « hen » → n ; « aime », « hem » → m ; « cas », « ka » → k ; « thé », « té » → t ; « pé », « paix » → p ;
+« ix », « hix » → x ; « i grec » → y ; « zed » → z ; « elle », « aile » → l ; « èf », « effe » → f ; « gé », « j'ai » → g ;
+« achète », « hache » → h ; « air », « erre » → r ; « esse » → s ; « vé » → v ; « bé » → b ; « cé », « c'est » → c ; « dé » → d.
+« à mentir », « un entier » → un entier (\in \mathbb{N} ou \in \mathbb{Z} selon le contexte) ; « un réel », « une réelle » → \in \mathbb{R}.
+Les mots du texte (soit, pour tout, il existe, donc, alors) restent du texte : \text{soit } n \in \mathbb{N}.
 Écris fidèlement ce qui est dicté, même si c'est faux : ne corrige jamais le raisonnement.
 Si le message contient « LIGNE ACTUELLE » et « CORRECTION », renvoie la ligne actuelle modifiée selon la consigne,
 en ne changeant que ce qu'elle vise ; « X, pas Y » veut dire : remplace Y par X.
@@ -386,6 +393,8 @@ Cours : {topic}.
 Exemples :
 sigma deux égale racine de deux fois sigma un → \sigma_2 = \sqrt{2}\,\sigma_1
 d sur dx de e puissance moins x carré → \frac{d}{dx} e^{-x^2}
+soit haine à mentir → \text{soit } n \in \mathbb{N}
+pour tout ix réel, èf de ix supérieur ou égal à zéro → \forall x \in \mathbb{R},\ f(x) \geq 0
 LIGNE ACTUELLE : a = b^2 + c / CORRECTION : moins c, pas plus c → a = b^2 - c"""
 
 
