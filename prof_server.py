@@ -97,14 +97,15 @@ class Ears:
         # hotwords : les termes techniques à favoriser.
         # Le prompt est une phrase naturelle : une liste « Vocabulaire : a, b, c » fait continuer la liste
         # à Whisper sur un énoncé court (« Allo » -> « SIFT, DOG, ... laulich, laulich »). Les termes
-        # techniques passent par hotwords.
-        prompt = f"Bonjour. Aujourd'hui, en cours, on parle de {self.topic}."
+        # techniques sont dans le prompt (hotwords faisait sortir de l'islandais sur un test).
+        termes = ", de ".join(words[:12])
+        prompt = f"Bonjour. Aujourd'hui, en cours, on parle de {self.topic}" + (f", de {termes}." if termes else ".")
         segs, _ = self.m.transcribe(audio, language="fr", beam_size=5, vad_filter=False,
-                                    condition_on_previous_text=False, initial_prompt=prompt,
-                                    hotwords=", ".join(words) or None)
+                                    condition_on_previous_text=False, initial_prompt=prompt)
         segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
         txt = " ".join(s.text.strip() for s in segs).strip()
-        return "" if self.HALLU.search(txt) or self.garbage(txt) else txt
+        copie = txt.lower().strip(" .") in prompt.lower()          # Whisper recopie le prompt sur un son trop court
+        return "" if self.HALLU.search(txt) or self.garbage(txt) or copie else txt
 
     @staticmethod
     def garbage(txt):
