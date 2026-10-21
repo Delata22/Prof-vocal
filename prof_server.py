@@ -20,6 +20,7 @@ if os.environ.get("PROF_REEXEC") != "1":
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 import numpy as np
+import soxr
 from aiohttp import web, WSMsgType
 
 CAHIER = Path.home() / ".claude/cahier/cahier.py"
@@ -119,14 +120,52 @@ class Ears:
 # ---------------- voix : Piper ----------------
 
 class Voice:
+    """Voix Piper au choix (fichiers de ~/.claude/cahier/voices), réglage gardé dans voice.json."""
+    DIR = VOICE.parent
+    CONF = HERE / "voice.json"
+    SAMPLE = "Bonjour ! Prenons un pixel et ses quatre voisins : le gradient nous dit dans quelle direction l'image change le plus vite."
+    MAX_SPEAKERS = 12          # mls a 125 locuteurs : on n'en propose que quelques-uns
+
     def __init__(self):
-        from piper import PiperVoice, SynthesisConfig
-        self.v = PiperVoice.load(str(VOICE))
-        self.cfg = SynthesisConfig(length_scale=1.0)
-        self.sr = self.v.config.sample_rate
+        from piper import SynthesisConfig
+        self.SynthesisConfig = SynthesisConfig
+        self.loaded = {}
         self.lex = Watched(LEXIQUE, parse_lexique)
+        conf = json.loads(self.CONF.read_text()) if self.CONF.exists() else {}
+        self.set(conf.get("voice", "fr_FR-siwis-medium"), conf.get("speaker"), conf.get("speed", 1.0), save=False)
         self.pcm("Bonjour.")
-        log("piper prêt")
+        log(f"piper prêt : {self.name} {self.speaker or ''} vitesse {self.speed}")
+
+    def catalog(self):
+        out = []
+        for j in sorted(self.DIR.glob("*.onnx.json")):
+            name = j.name[:-len(".onnx.json")]
+            spk = list(json.loads(j.read_text()).get("speaker_id_map", {}))[:self.MAX_SPEAKERS]
+            short = name.replace("fr_FR-", "")
+            out += [{"voice": name, "speaker": sp, "label": f"{short} · {sp}"} for sp in spk] if spk else \
+                   [{"voice": name, "speaker": None, "label": short}]
+        return out
+
+    def _load(self, name):
+        if name not in self.loaded:
+            from piper import PiperVoice
+            self.loaded[name] = PiperVoice.load(str(self.DIR / f"{name}.onnx"))
+        return self.loaded[name]
+
+    def set(self, name, speaker=None, speed=1.0, save=True):
+        if not (self.DIR / f"{name}.onnx").exists():
+            name, speaker = "fr_FR-siwis-medium", None
+        v = self._load(name)
+        sid = v.config.speaker_id_map.get(speaker) if speaker is not None and v.config.speaker_id_map else None
+        self.name, self.v, self.speaker = name, v, speaker if sid is not None else None
+        self.speed = max(0.6, min(1.6, float(speed or 1.0)))
+        self.cfg = self.SynthesisConfig(speaker_id=sid, length_scale=1 / self.speed)
+        self.sr = v.config.sample_rate
+        if save:
+            self.CONF.write_text(json.dumps({"voice": name, "speaker": self.speaker, "speed": self.speed}))
+
+    def current(self):
+        return {"voice": self.name, "speaker": self.speaker, "speed": self.speed}
 
     def prononce(self, text):
         for pat, say in self.lex.get():
@@ -134,9 +173,11 @@ class Voice:
         return text
 
     def pcm(self, text):
+        """Renvoie (pcm int16, taux) : le taux dépend de la voix (16, 22,05 ou 44,1 kHz)."""
+        v, cfg, sr = self.v, self.cfg, self.sr          # instantané : la voix peut changer pendant la synthèse
         text = self.prononce(text)
-        parts = [c.audio_int16_bytes for c in self.v.synthesize(text, self.cfg)]
-        return b"".join(parts) + b"\0\0" * int(self.sr * 0.18)   # petit silence de fin de phrase
+        parts = [c.audio_int16_bytes for c in v.synthesize(text, cfg)]
+        return b"".join(parts) + b"\0\0" * int(sr * 0.18), sr   # petit silence de fin de phrase
 
 
 SPEAKABLE = [
@@ -433,7 +474,7 @@ class Prof:
                 await self.send({"t": "done", "gen": gen})
                 continue
             t = time.time()
-            pcm = await loop.run_in_executor(None, self.voice.pcm, text)
+            pcm, sr = await loop.run_in_executor(None, self.voice.pcm, text)
             if gen != self.gen:
                 continue
             if idx == 0:
@@ -443,10 +484,10 @@ class Prof:
                     f"{tt.get('first_text', 0) - tt['stt']:.2f} s | 1re phrase synthétisée "
                     f"{tt['first_audio'] - tt['t0']:.2f} s après réception (piper {time.time() - t:.2f} s)")
             self.history.append(("prof", text))
-            await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "sr": self.voice.sr,
+            await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "sr": sr,
                              "pcm": base64.b64encode(pcm).decode()})
 
-    def keep_audio(self, audio, text):
+    def keep_audio(self, audio, text, raw=None, sr=16000):
         """Garde chaque segment + sa transcription (corpus pour un futur fine-tuning de Whisper sur sa voix)."""
         import wave
         d = SESS / self.a.slug / "audio"
@@ -455,8 +496,13 @@ class Prof:
         with wave.open(str(d / f"{name}.wav"), "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
             w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+        if raw is not None and sr != 16000:      # le brut, au taux natif, pour comparer
+            with wave.open(str(d / f"{name}.raw{sr}.wav"), "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+                w.writeframes((np.clip(raw, -1, 1) * 32767).astype(np.int16).tobytes())
         with open(d / "transcriptions.jsonl", "a") as f:
-            f.write(json.dumps({"audio": f"{name}.wav", "text": text, "whisper": text, "corrige": None},
+            f.write(json.dumps({"audio": f"{name}.wav", "raw": f"{name}.raw{sr}.wav" if sr != 16000 else None,
+                                "text": text, "whisper": text, "corrige": None},
                                ensure_ascii=False) + "\n")
 
     # --- websocket ---
@@ -478,18 +524,27 @@ class Prof:
                 pass
         log("page connectée")
         await self.send({"t": "info", "slug": self.a.slug, "topic": self.a.topic, "model": self.a.model,
-                         "history": self.history[-12:]})
+                         "history": self.history[-12:], "voices": self.voice.catalog(), "voice": self.voice.current()})
+        next_sr = 16000          # taux du prochain segment binaire (annoncé par {t: audio, sr})
         await self.state("listening")
         loop = asyncio.get_running_loop()
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
                 t0 = time.time()
-                audio = np.frombuffer(msg.data, np.float32)
-                log(f"segment reçu : {len(audio) / 16000:.1f} s, niveau max {float(np.abs(audio).max()) if len(audio) else 0:.2f}")
+                raw, sr, next_sr = np.frombuffer(msg.data, np.float32), next_sr, 16000
+                # la page envoie au taux natif du micro (souvent 48 kHz) : rééchantillonnage propre ici
+                audio = raw if sr == 16000 else soxr.resample(raw, sr, 16000, quality="HQ").astype(np.float32)
+                rms = float(np.sqrt(np.mean(raw ** 2))) if len(raw) else 0.0
+                # trous de capture : plages d'échantillons exactement nuls (≥ 5 ms) au milieu du segment
+                z = np.concatenate([[0], (raw == 0).astype(np.int8), [0]])
+                st, en = np.flatnonzero(np.diff(z) == 1), np.flatnonzero(np.diff(z) == -1)
+                holes = int(np.sum(((en - st) >= sr // 200) & (st > 0) & (en < len(raw))))
+                log(f"segment reçu : {len(raw) / sr:.1f} s à {sr} Hz, max {float(np.abs(raw).max()) if len(raw) else 0:.2f}, "
+                    f"rms {rms:.3f}" + (f", ⚠ {holes} trous de silence numérique (capture ?)" if holes else ""))
                 await self.state("transcribing")
                 text = await loop.run_in_executor(None, self.ears.transcribe, audio)
                 log(f"entendu ({len(audio) / 16000:.1f} s d'audio, stt {time.time() - t0:.2f} s) : {text!r}")
-                loop.run_in_executor(None, self.keep_audio, audio, text)
+                loop.run_in_executor(None, self.keep_audio, audio, text, raw, sr)
                 if not text:
                     await self.state("listening")
                     if self.interrupted is not None and not self.brain.busy:
@@ -512,6 +567,17 @@ class Prof:
                 elif j["t"] == "text":
                     await self.send({"t": "user", "text": j["text"]})
                     await self.question(j["text"])
+                elif j["t"] == "audio":
+                    next_sr = int(j.get("sr", 16000))
+                    if j.get("mic"):
+                        log(f"micro : {j['mic']} ({next_sr} Hz)")
+                elif j["t"] == "voice":
+                    await loop.run_in_executor(None, self.voice.set, j["voice"], j.get("speaker"), j.get("speed", 1.0))
+                    log("voix :", self.voice.current())
+                    await self.send({"t": "voice", "voice": self.voice.current()})
+                elif j["t"] == "sample":
+                    pcm, sr = await loop.run_in_executor(None, self.voice.pcm, self.voice.SAMPLE)
+                    await self.send({"t": "sample", "sr": sr, "pcm": base64.b64encode(pcm).decode()})
                 elif j["t"] == "latency":
                     line = (f"{time.strftime('%F %T')} model={self.a.model} fin_parole->1er_son="
                             f"{j['ms'] / 1000:.2f}s (dont attente fin VAD {j.get('vad_ms', 0) / 1000:.2f}s)")

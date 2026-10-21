@@ -33,6 +33,11 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #lat{color:var(--muted);font-size:12px}
 #meter{width:120px;height:5px;background:var(--line);border-radius:3px;overflow:hidden}#meter i{display:block;height:100%;width:0;background:var(--listen)}
 #log .err{color:var(--red);font-size:13px}
+#micinfo{color:var(--muted);font-size:12px;max-width:260px;text-align:right}
+#settings{display:none;position:fixed;right:14px;bottom:calc(30vh + 8px);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;z-index:8;flex-direction:column;gap:10px;width:340px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+#settings.open{display:flex} #settings label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted)}
+#settings label.row{flex-direction:row;align-items:center;gap:6px}
+#settings select{font:inherit;font-size:14px;padding:4px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
 #cover2{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:color-mix(in srgb,var(--bg) 92%,transparent);z-index:10;text-align:center}
 #cover{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:color-mix(in srgb,var(--bg) 85%,transparent);z-index:9}
 #cover p{color:var(--muted);max-width:520px;text-align:center}
@@ -48,9 +53,18 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
     <button id="send" title="Espace">Parler / Envoyer</button></div>
     <button id="mute" title="Couper / rouvrir le micro">Micro : ouvert</button>
     <input id="txt" placeholder="ou écris ta question + Entrée">
-    <button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
+    <div style="display:flex;gap:6px"><button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
+    <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button></div>
+    <span id="micinfo"></span>
     <span id="lat"></span>
   </div>
+</div>
+<div id="settings">
+  <label>Micro <select id="micsel"><option>(après « Démarrer »)</option></select></label>
+  <label class="row"><input type="checkbox" id="filters" checked> filtres du navigateur (écho, bruit, gain)</label>
+  <label>Voix <select id="voicesel"></select></label>
+  <label>Vitesse <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1"> <span id="speedv">× 1.00</span></label>
+  <button id="sample">Écouter un exemple</button>
 </div>
 <div id="cover"><button class="big" id="go">Démarrer le cours</button>
   <p>Un clic est nécessaire pour autoriser le micro et le son.<br><b>Espace</b> : un appui = j'enregistre (et le prof se tait), un 2e appui = j'envoie. Échap annule.<br>Le mode « auto » détecte seul la fin de tes phrases (moins fiable avec du bruit).</p></div>
@@ -148,7 +162,10 @@ function connect() {
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.t === "replaced") { replaced = true; replacedCover(); return; }
+    if (m.t === "voice") { fillVoices(null, m.voice); return; }
+    if (m.t === "sample") { playSample(m); return; }
     if (m.t === "info") {
+      fillVoices(m.voices, m.voice);
       if (!$("board").src) $("board").src = `http://localhost:8777/s/${m.slug}`;
       document.title = `Prof · ${m.topic}`;
       $("log").innerHTML = ""; pLine = null;
@@ -191,29 +208,47 @@ function bargeIn() {
   send({t: "barge", last}); dbg("barge-in, dernière phrase :", last);
   addLine("tool", "(interrompu)"); pLine = null;
 }
-function sendSegment(f32, why) {
-  const sec = f32.length / 16000;
+function sendSegment(f32, why, sr = 16000) {
+  const sec = f32.length / sr;
   if (sec < 0.3) { dbg("segment trop court, ignoré", sec); show("listening"); return; }
   if (!ws || ws.readyState !== 1) { dbg("segment PERDU : websocket fermée", ws && ws.readyState); show("listening", "segment perdu : connexion au serveur coupée"); return; }
+  ws.send(JSON.stringify({t: "audio", sr, mic: micLabel()}));   // annonce le taux du segment qui suit
   ws.send(f32.buffer.slice(f32.byteOffset, f32.byteOffset + f32.byteLength));
-  dbg(`segment envoyé (${why}) : ${sec.toFixed(1)} s`);
+  dbg(`segment envoyé (${why}) : ${sec.toFixed(1)} s à ${sr} Hz`);
   show("transcribing", `envoyé : ${sec.toFixed(1)} s d'audio`);
 }
 
-// --- mode espace : enregistrement brut 16 kHz ---
+// --- mode espace : enregistrement au taux natif du micro (AudioWorklet), rééchantillonné côté serveur ---
+// (l'ancien AudioContext à 16 kHz + ScriptProcessor laissait passer des trous et un rééchantillonnage douteux)
+const CAP_WORKLET = `class Cap extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(2048); this.n = 0; }
+  process(inputs) {
+    const x = inputs[0] && inputs[0][0]; if (!x) return true;
+    for (let i = 0; i < x.length; i++) { this.buf[this.n++] = x[i]; if (this.n === this.buf.length) { this.port.postMessage(this.buf); this.buf = new Float32Array(2048); this.n = 0; } }
+    return true;
+  }
+}
+registerProcessor("cap", Cap);`;
+let capNode = null, capSrc = null;
 async function startRecorder() {
-  rec = new AudioContext({sampleRate: 16000});
-  const src = rec.createMediaStreamSource(stream), proc = rec.createScriptProcessor(4096, 1, 1), sink = rec.createGain();
-  sink.gain.value = 0;
-  proc.onaudioprocess = e => {
-    const x = e.inputBuffer.getChannelData(0);
-    if (recording) chunks.push(new Float32Array(x));
+  rec = new AudioContext();                            // taux natif (souvent 48 kHz)
+  await rec.audioWorklet.addModule(URL.createObjectURL(new Blob([CAP_WORKLET], {type: "application/javascript"})));
+  capNode = new AudioWorkletNode(rec, "cap");
+  const sink = rec.createGain(); sink.gain.value = 0;
+  capNode.port.onmessage = e => {
+    const x = e.data;
+    if (recording) chunks.push(x);
     if (mode === "espace") {
       let r = 0; for (let i = 0; i < x.length; i++) r += x[i] * x[i];
       $("meter").firstChild.style.width = Math.min(100, Math.round(Math.sqrt(r / x.length) * 600)) + "%";
     }
   };
-  src.connect(proc); proc.connect(sink); sink.connect(rec.destination);
+  capNode.connect(sink); sink.connect(rec.destination);
+  connectRecorder();
+}
+function connectRecorder() {
+  if (capSrc) capSrc.disconnect();
+  capSrc = rec.createMediaStreamSource(stream); capSrc.connect(capNode);
 }
 function startRec() {
   if (recording) return;
@@ -235,7 +270,7 @@ function stopRec(sendIt) {
   chunks = [];
   if (!sendIt) { dbg("enregistrement annulé"); show("listening"); return; }
   tSpeechEnd = performance.now(); vadWait = 0;
-  sendSegment(f, "espace");
+  sendSegment(f, "espace", rec.sampleRate);
 }
 
 // --- mode auto : VAD ---
@@ -260,11 +295,13 @@ async function startVad() {
       }
     },
     onSpeechStart: () => {
+      if (mode !== "auto" || muted) return;            // en mode espace le VAD ne décide de rien
       dbg("VAD : début de parole ?");
       if (playing && !ducked) { ducked = true; ctx.suspend(); }   // pause tout de suite, peut-être un bruit
     },
-    onVADMisfire: () => { dbg("VAD : fausse alerte"); if (ducked) { ducked = false; ctx.resume(); } },
+    onVADMisfire: () => { if (mode !== "auto") return; dbg("VAD : fausse alerte"); if (ducked) { ducked = false; ctx.resume(); } },
     onSpeechRealStart: () => {
+      if (mode !== "auto" || muted) return;
       dbg("VAD : parole confirmée"); speaking = true;
       bargeIn(); if (ducked) { ducked = false; ctx.resume(); }
       show("recording", "tu parles… (Envoyer pour couper)");
@@ -272,6 +309,7 @@ async function startVad() {
       autoTimer = setTimeout(() => { dbg(`VAD : ${MAX_AUTO_S} s sans fin de phrase, envoi forcé`); forceEnd(); }, MAX_AUTO_S * 1000);
     },
     onSpeechEnd: audio => {
+      if (mode !== "auto" || muted) { speaking = false; return; }
       speaking = false; clearTimeout(autoTimer);
       dbg("VAD : fin de parole");
       // la parole a fini ~REDEMPTION_MS avant cet événement (le VAD attend ce silence pour conclure)
@@ -296,12 +334,67 @@ async function setMode(m) {
   show(serverState === "done" ? "listening" : serverState);
 }
 
+// --- choix du micro ---
+const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
+const setPref = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+function micLabel() { const t = stream && stream.getAudioTracks()[0]; return t ? t.label : ""; }
+async function openMic(deviceId) {
+  const filt = $("filters").checked;
+  const audio = {echoCancellation: filt, noiseSuppression: filt, autoGainControl: filt, channelCount: 1};
+  if (deviceId) audio.deviceId = {exact: deviceId};
+  const s2 = await navigator.mediaDevices.getUserMedia({audio});
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = s2;
+  const t = stream.getAudioTracks()[0], st = t.getSettings();
+  $("micinfo").textContent = `🎙 ${t.label || "micro"}` + (st.sampleRate ? ` · ${st.sampleRate / 1000} kHz` : "");
+  $("micinfo").title = JSON.stringify(st);
+  if (/hands-free|hfp|headset|wh-1000/i.test(t.label)) $("micinfo").textContent += " (Bluetooth : bande étroite ?)";
+  dbg("micro :", t.label, st);
+  // liste des micros (les noms ne sont visibles qu'après autorisation)
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+  $("micsel").innerHTML = "";
+  for (const d of devs) {
+    const o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || d.deviceId.slice(0, 8);
+    if (d.deviceId === st.deviceId) o.selected = true; $("micsel").append(o);
+  }
+  if (rec) connectRecorder();
+  if (mic) { try { mic.destroy(); } catch (e) {} mic = null; }
+  try { await startVad(); } catch (e) { console.error(e); dbg("VAD indisponible", e); }
+}
+$("micsel").onchange = async () => { setPref("prof-mic", $("micsel").value); await openMic($("micsel").value); await setMode(mode); };
+$("filters").onchange = async () => { setPref("prof-filters", $("filters").checked ? "1" : "0"); await openMic($("micsel").value || pref("prof-mic", "")); await setMode(mode); };
+$("filters").checked = pref("prof-filters", "1") === "1";
+
+// --- choix de la voix ---
+let voices = [];
+function fillVoices(list, cur) {
+  if (list) voices = list;
+  $("voicesel").innerHTML = "";
+  voices.forEach((v, i) => {
+    const o = document.createElement("option"); o.value = i; o.textContent = v.label;
+    if (cur && v.voice === cur.voice && (v.speaker ?? null) === (cur.speaker ?? null)) o.selected = true;
+    $("voicesel").append(o);
+  });
+  if (cur) { $("speed").value = cur.speed; $("speedv").textContent = `× ${(+cur.speed).toFixed(2)}`; }
+}
+function sendVoice() { const v = voices[+$("voicesel").value]; if (v) send({t: "voice", voice: v.voice, speaker: v.speaker, speed: +$("speed").value}); }
+$("voicesel").onchange = sendVoice;
+$("speed").oninput = () => { $("speedv").textContent = `× ${(+$("speed").value).toFixed(2)}`; };
+$("speed").onchange = sendVoice;
+let sampleSrc = null;
+$("sample").onclick = () => { ctx.resume(); send({t: "sample"}); $("sample").textContent = "…"; };
+function playSample(m) {
+  $("sample").textContent = "Écouter un exemple";
+  if (sampleSrc) try { sampleSrc.stop(); } catch (e) {}
+  sampleSrc = ctx.createBufferSource(); sampleSrc.buffer = pcmBuffer(m.pcm, m.sr); sampleSrc.connect(out); sampleSrc.start();
+}
+$("gear").onclick = () => $("settings").classList.toggle("open");
+
 $("go").onclick = async () => {
   await ctx.resume();
   try {
-    stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}});
+    await openMic(pref("prof-mic", ""));
     await startRecorder();
-    try { await startVad(); } catch (e) { console.error(e); dbg("VAD indisponible", e); }
     await setMode(mic ? mode : "espace");
   } catch (e) { console.error(e); micErr = "micro indisponible (" + e.name + ") : écris tes questions"; $("mute").textContent = "Micro : absent"; show("listening"); }
   $("cover").remove();

@@ -27,6 +27,8 @@ Variables : `PROF_MODEL` (défaut `claude-opus-5-5`), `PROF_EFFORT` (défaut `lo
 
 - Micro : **espace** = 1er appui j'enregistre (et coupe le prof), 2e appui j'envoie ; Échap annule. Bouton « Mode » pour le mode auto (VAD, fin de phrase détectée seule, envoi forcé à 20 s ou avec « Envoyer »). Traces dans la console (`[prof …]`) et « VAD au repos » dans la barre.
 - Page muette pour les tests : http://localhost:8778/?mute
+- ⚙ Réglages : choix du micro (et filtres écho/bruit/gain du navigateur), voix Piper (siwis, tom, upmc jessica/pierre, gilles, mls), vitesse, « Écouter un exemple ». Réglage de voix gardé dans `voice.json`.
+- Capture du mode espace au taux natif du micro (AudioWorklet), rééchantillonnée en 16 kHz côté serveur (soxr) ; le brut est gardé dans `sessions/<slug>/audio/*.raw<taux>.wav`.
 - Dans la page : bouton « Question test (wav) », ou taper une question + Entrée (interrompt aussi).
 - Sans page : `PROF_NO_OPEN=1 ./prof.sh test "SIFT" &` puis `.venv/bin/python tests/test_client.py`
   (3 questions parlées par Piper, dont une interruption ; affiche les latences).
