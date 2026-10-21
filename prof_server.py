@@ -526,6 +526,19 @@ class Prof:
             self.history.pop()
 
     # --- panneau « Ta réponse » ---
+    async def partial(self, raw, sr):
+        """Aperçu : texte entendu jusqu'ici, puis sa conversion LaTeX si le convertisseur est libre."""
+        loop = asyncio.get_running_loop()
+        audio = raw if sr == 16000 else soxr.resample(raw, sr, 16000, quality="QQ").astype(np.float32)
+        text = await loop.run_in_executor(None, self.ears.transcribe, audio, True)
+        await self.send({"t": "partial", "text": text})
+        if text and not self.conv.lock.locked():
+            try:
+                latex = await self.conv.convert(text)
+                await self.send({"t": "partial", "text": text, "latex": latex})
+            except Exception as e:
+                log("aperçu LaTeX :", e)
+
     async def answer_line(self, text, last=None):
         """Une ligne dictée : nouvelle ligne de calcul, « parce que… », « corrige : … » ou « j'envoie »."""
         t = text.strip()
@@ -690,6 +703,9 @@ class Prof:
                 t0 = time.time()
                 raw, sr, next_sr = np.frombuffer(msg.data, np.float32), next_sr, 16000
                 hdr, next_hdr = next_hdr, {}
+                if hdr.get("target") == "partial":    # aperçu en direct d'une ligne de calcul en cours de dictée
+                    asyncio.create_task(self.partial(raw, sr))
+                    continue
                 # la page envoie au taux natif du micro (souvent 48 kHz) : rééchantillonnage propre ici
                 audio = raw if sr == 16000 else soxr.resample(raw, sr, 16000, quality="HQ").astype(np.float32)
                 rms = float(np.sqrt(np.mean(raw ** 2))) if len(raw) else 0.0

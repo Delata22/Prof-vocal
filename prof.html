@@ -42,6 +42,8 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #apending{color:var(--acc);font-size:13px}
 #answer .aline{display:grid;grid-template-columns:24px minmax(0,1.6fr) minmax(0,1fr) 28px;gap:8px;align-items:center;border-radius:8px;padding:2px}
 #answer .aline.flash{animation:flash 1.2s} @keyframes flash{0%{background:color-mix(in srgb,var(--acc) 30%,transparent)}100%{background:transparent}}
+#alive{display:none;grid-template-columns:24px minmax(0,1.6fr) minmax(0,1fr);gap:8px;align-items:center;border:1px dashed var(--acc);border-radius:8px;padding:4px}
+#alive.on{display:grid} #alive .pt{color:var(--muted);font-size:13px;font-style:italic} #alive math-field{opacity:.75;pointer-events:none}
 #answer .num{color:var(--muted);text-align:right}
 #answer math-field{font-size:22px;border:1px solid var(--line);border-radius:7px;padding:2px 6px;background:var(--bg);color:var(--fg);--caret-color:var(--acc)}
 #answer .why,#atext{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}
@@ -81,6 +83,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <span class="hint">espace : dicter une ligne · « parce que … » · « corrige : … » · « j'envoie » · Ctrl+Entrée envoie · Échap ferme</span>
     <span id="apending"></span><button id="aclose" title="Échap">×</button></div>
   <div id="alines"></div>
+  <div id="alive"><span class="num">…</span><math-field read-only></math-field><span class="pt"></span></div>
   <div class="afoot"><button id="aadd">+ ligne</button>
     <input id="atext" placeholder="ou tape la ligne en français + Entrée">
     <button id="asend" class="primary">Envoyer au prof</button></div>
@@ -225,7 +228,12 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.t === "replaced") { replaced = true; replacedCover(); return; }
     if (m.t === "voice") { fillVoices(null, m.voice); return; }
-    if (m.t === "ans") { onAns(m); return; }
+    if (m.t === "ans") { liveHide(); onAns(m); return; }
+    if (m.t === "partial") {
+      if (!m.latex) partialBusy = false;
+      if (recording && answerOpen) liveShow(m.text, m.latex);
+      return;
+    }
     if (m.t === "open_answer") { openAnswer(); return; }
     if (m.t === "sample") { playSample(m); return; }
     if (m.t === "info") {
@@ -316,12 +324,34 @@ function connectRecorder() {
   if (capSrc) capSrc.disconnect();
   capSrc = rec.createMediaStreamSource(stream); capSrc.connect(capNode);
 }
+// ---------- aperçu en direct de la ligne dictée ----------
+let liveTimer = null, partialBusy = false, partialT = 0;
+function liveShow(text, latex) {
+  $("alive").classList.add("on");
+  $("alive").querySelector(".pt").textContent = text ? `« ${text} »` : "j'écoute…";
+  if (latex !== undefined) $("alive").querySelector("math-field").value = latex;
+}
+function liveHide() { clearInterval(liveTimer); liveTimer = null; $("alive").classList.remove("on"); $("alive").querySelector("math-field").value = ""; }
+function sendPartial() {
+  if (!recording || !answerOpen || !ws || ws.readyState !== 1) return;
+  if (partialBusy && performance.now() - partialT < 4000) return;         // le précédent n'est pas revenu
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  if (n < rec.sampleRate * 0.6) return;
+  const f = new Float32Array(n); let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
+  partialBusy = true; partialT = performance.now();
+  ws.send(JSON.stringify({t: "audio", sr: rec.sampleRate, target: "partial"}));
+  ws.send(f.buffer);
+}
 function startRec() {
   if (recording) return;
   if (!answerOpen || playing || queue.length) bargeIn();   // dicter une ligne de calcul ne coupe que si le prof parle
   if (rec.state !== "running") rec.resume();
   recording = true; chunks = []; recT0 = performance.now();
-  if (answerOpen) $("apending").textContent = "j'enregistre ta ligne de calcul… (espace pour finir)";
+  if (answerOpen) {
+    $("apending").textContent = "j'enregistre ta ligne de calcul… (espace pour finir)";
+    liveShow("", ""); partialBusy = false;
+    clearInterval(liveTimer); liveTimer = setInterval(sendPartial, 1000);
+  }
   show("recording");
   recTimer = setInterval(() => {
     const t = (performance.now() - recT0) / 1000;
@@ -339,6 +369,8 @@ function stopRec(sendIt, now) {
     return;
   }
   if (tailTimer) { clearTimeout(tailTimer); tailTimer = null; }
+  clearInterval(liveTimer); liveTimer = null;
+  if (!sendIt) liveHide();
   recording = false; clearInterval(recTimer);
   const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
   let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
