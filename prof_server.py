@@ -95,12 +95,24 @@ class Ears:
         words = self.words()
         # initial_prompt : le contexte (Whisper imite le style et l'orthographe du prompt) ;
         # hotwords : les termes techniques à favoriser.
-        prompt = f"Cours oral sur {self.topic}." + (f" Vocabulaire : {', '.join(words)}." if words else "")
+        # Le prompt est une phrase naturelle : une liste « Vocabulaire : a, b, c » fait continuer la liste
+        # à Whisper sur un énoncé court (« Allo » -> « SIFT, DOG, ... laulich, laulich »). Les termes
+        # techniques passent par hotwords.
+        prompt = f"Bonjour. Aujourd'hui, en cours, on parle de {self.topic}."
         segs, _ = self.m.transcribe(audio, language="fr", beam_size=5, vad_filter=False,
                                     condition_on_previous_text=False, initial_prompt=prompt,
                                     hotwords=", ".join(words) or None)
-        txt = " ".join(s.text.strip() for s in segs if s.no_speech_prob < 0.8).strip()
-        return "" if self.HALLU.search(txt) else txt
+        segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
+        txt = " ".join(s.text.strip() for s in segs).strip()
+        return "" if self.HALLU.search(txt) or self.garbage(txt) else txt
+
+    @staticmethod
+    def garbage(txt):
+        """Hallucination typique : autre alphabet que le latin, ou un mot répété en boucle."""
+        if re.search(r"[^\x00-\u024F\u2000-\u206F\u20AC]", txt):
+            return True
+        ws = re.findall(r"\w+", txt.lower())
+        return len(ws) >= 6 and max(ws.count(w) for w in set(ws)) / len(ws) > 0.3
 
 
 # ---------------- voix : Piper ----------------
