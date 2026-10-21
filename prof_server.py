@@ -450,6 +450,10 @@ class Prof:
     async def handle_ws(self, req):
         ws = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024, heartbeat=20)
         await ws.prepare(req)
+        if req.query.get("v") != "2":
+            # page chargée avant la mise à jour (elle se reconnecte en boucle) : refusée sans prendre la main
+            await ws.close(code=4001, message=b"page perimee")
+            return ws
         old, self.ws = self.ws, ws
         if old is not None and not old.closed:
             # une seule page active : la dernière ouverte gagne, l'ancienne est prévenue

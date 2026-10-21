@@ -139,7 +139,7 @@ function send(o) {
   if (!ws || ws.readyState !== 1) { showErr("pas connecté au serveur : message non envoyé"); return; }
   ws.send(typeof o === "string" || o instanceof ArrayBuffer ? o : JSON.stringify(o)); }
 function connect() {
-  ws = new WebSocket(`ws://${location.host}/ws`); ws.binaryType = "arraybuffer";
+  ws = new WebSocket(`ws://${location.host}/ws?v=2`); ws.binaryType = "arraybuffer";
   ws.onopen = () => show("listening");
   ws.onclose = e => {
     if (e.code === 4001 || replaced) { replacedCover(); return; }   // une autre page a pris la main : pas de reconnexion
