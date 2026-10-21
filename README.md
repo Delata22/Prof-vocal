@@ -36,6 +36,9 @@ Variables : `PROF_MODEL` (défaut `claude-opus-5-5`), `PROF_EFFORT` (défaut `lo
 - `prof.html` : page (tableau en iframe, barre d'état, transcription, VAD, lecture audio, barge-in).
 - `prompt.md` : consignes du prof (ajoutées au system prompt de Claude Code).
 - `latency.log` : latence mesurée par la page (fin de parole → 1er son).
+- `vocab.txt` (+ `sessions/<slug>/vocab.txt`) : vocabulaire donné à Whisper (initial_prompt + hotwords), relu à chaud.
+- `pron.py` : lexique de prononciation de Piper (`~/.claude/cahier/prononciation.json`, partagé avec le cahier), relu à chaud.
+- `sessions/<slug>/audio/` : chaque segment wav + `transcriptions.jsonl` (corpus pour un futur fine-tuning de Whisper).
 
 ## Détails
 

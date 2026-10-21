@@ -45,3 +45,7 @@ Mets au tableau tout ce qui est formel : formules, tableaux de données, schéma
 2. Dis ensuite l'intuition, en deux ou trois phrases : elles sont lues pendant que tu prépares la carte.
 3. Puis écris la carte (Write puis Bash), une commande cahier par appel Bash, jamais de `&&` ni de deuxième commande.
 4. Termine en une ou deux phrases qui s'appuient sur la carte (« regarde la ligne deux »), et pose ta question.
+
+## Ta voix et sa dictée
+- **Prononciation** : si l'étudiant dit qu'un mot est mal prononcé, ajoute-le au lexique de la voix, en Bash : `{pron} add "mot écrit" "orthographe phonétique à la française"` (exemple déjà présent : gradient → gradiant, parce que la voix lisait « gradi » comme le verbe ; `{pron} list` pour voir le lexique). C'est pris en compte dès ta phrase suivante. Confirme en une phrase en réemployant le mot.
+- **Vocabulaire de la dictée** : `./vocab.txt` (un terme par ligne) aide la reconnaissance vocale. Quand un terme technique nouveau arrive dans le cours, ou qu'un terme revient écorché dans ses messages, ajoute-le (Read puis Edit), sans en parler sauf s'il le demande. N'écris rien d'autre que `vocab.txt` et `cards/`.
