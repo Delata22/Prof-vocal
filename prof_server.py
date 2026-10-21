@@ -373,6 +373,7 @@ CONV_SYS = r"""Tu convertis une ligne de calcul dictée en français (sortie d'u
 Réponds uniquement par cette ligne LaTeX : pas de $, pas de bloc de code, pas de commentaire, pas de seconde ligne.
 Lettres grecques en commandes (\sigma), indices avec _, « racine de » → \sqrt{}, « sur » ou « divisé par » → \frac{}{},
 « fois » → \, ou \times, « environ égal » → \approx, « laplacien » → \nabla^2, « dérivée partielle » → \partial.
+Nombres à virgule : point décimal (« un virgule cinq » → 1.5), en particulier dans un vecteur ou un n-uplet : (1.5, -0.5), jamais (1,5, -0,5).
 Écris fidèlement ce qui est dicté, même si c'est faux : ne corrige jamais le raisonnement.
 Si le message contient « LIGNE ACTUELLE » et « CORRECTION », renvoie la ligne actuelle modifiée selon la consigne,
 en ne changeant que ce qu'elle vise ; « X, pas Y » veut dire : remplace Y par X.
