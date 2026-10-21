@@ -25,6 +25,8 @@ body.rec #bar{background:color-mix(in srgb,var(--red) 14%,transparent)} body.rec
 #log .u{color:var(--fg);font-weight:500;margin-top:6px} #log .u::before{content:"Toi : ";color:var(--muted);font-weight:400}
 #log .p{color:var(--fg)} #log .p::before{content:"Prof : ";color:var(--muted)}
 #log .p .s.cur{background:color-mix(in srgb,var(--speak) 22%,transparent);border-radius:4px}
+#log .p .s{cursor:pointer} #log .p .s:hover{text-decoration:underline dotted}
+#dot.paused{background:var(--think)}
 #log .p .s.cut{text-decoration:line-through;color:var(--muted)}
 #log .tool{color:var(--muted);font-size:12px;font-style:italic}
 #side{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
@@ -67,7 +69,9 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <input id="txt" placeholder="ou écris ta question + Entrée">
     <div style="display:flex;gap:6px"><button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
     <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button></div>
-    <button id="answerbtn" title="Touche R">✎ Ta réponse (R)</button>
+    <div style="display:flex;gap:6px"><button id="rew" title="Flèche gauche : reprendre la phrase ; 2 appuis rapides : la précédente">⏮ Phrase</button>
+    <button id="pause" title="Touche P">⏸ Pause</button>
+    <button id="answerbtn" title="Touche R">✎ Ta réponse (R)</button></div>
     <span id="micinfo"></span>
     <span id="lat"></span>
   </div>
@@ -93,13 +97,14 @@ button.primary{background:var(--acc);color:#fff;border:0}
 <script>
 const $ = id => document.getElementById(id);
 let ws, gen = 0, mic = null, muted = false, micErr = "";
-const LABEL = {recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
+const LABEL = {paused: "⏸ en pause", recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
 let serverState = "listening";
 
 // ---------- lecture audio en file ----------
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const out = ctx.createGain(); out.gain.value = new URLSearchParams(location.search).has("mute") ? 0 : 1; out.connect(ctx.destination);  // ?mute : tests automatiques sans son
 let queue = [], cur = null, playing = false, ducked = false;
+let heard = [], userPaused = false, lastRewind = 0;   // phrases déjà commencées (réponse en cours + précédente), pause manuelle
 let tSpeechEnd = null, vadWait = 0;      // pour mesurer fin de parole -> 1er son
 function pcmBuffer(b64, sr) {
   const bin = atob(b64), n = bin.length >> 1, buf = ctx.createBuffer(1, n, sr), ch = buf.getChannelData(0);
@@ -108,11 +113,13 @@ function pcmBuffer(b64, sr) {
   return buf;
 }
 function playNext() {
-  if (playing || ducked) return;
+  if (playing || ducked || userPaused) return;
   const it = queue.shift();
   if (!it) { cur = null; if (serverState === "listening" || serverState === "done") show("listening"); return; }
   const src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(out);
-  cur = {...it, src}; playing = true;
+  cur = {...it, src, t0: performance.now()}; playing = true;
+  heard.push(it); pruneHeard();
+  if (it.el) it.el.classList.remove("cut");
   markCur(it);
   src.onended = () => { if (cur && cur.src === src) { playing = false; cur.el && cur.el.classList.remove("cur"); cur = null; playNext(); } };
   src.start();
@@ -128,6 +135,37 @@ function stopAll(mark) {
   if (cur) { cur.src.onended = null; try { cur.src.stop(); } catch (e) {} if (mark && cur.el) { cur.el.classList.remove("cur"); cur.el.classList.add("cut"); } }
   queue = []; cur = null; playing = false;
   return last;
+}
+function pruneHeard() {          // garde les phrases des deux dernières réponses
+  const gens = [...new Set(heard.map(h => h.gen))];
+  if (gens.length > 2) heard = heard.filter(h => gens.slice(-2).includes(h.gen));
+}
+function silentStop() {           // arrête la phrase en cours sans la marquer « coupée »
+  if (cur) { cur.src.onended = null; try { cur.src.stop(); } catch (e) {} if (cur.el) cur.el.classList.remove("cur"); }
+  cur = null; playing = false;
+}
+function replayFrom(k) {          // rejoue à partir de la k-ième phrase entendue, puis la suite
+  if (k < 0 || k >= heard.length) return;
+  const items = heard.splice(k);
+  silentStop();
+  // la suite déjà entendue + ce qui restait à dire
+  queue = items.concat(queue.filter(q => !items.includes(q)));
+  if (userPaused) setPaused(false); else playNext();
+}
+function rewind() {
+  // 1er appui : reprend la phrase en cours à son début ; appui rapide suivant (ou phrase à peine commencée) : la précédente
+  const now = performance.now();
+  let k = heard.length - 1;
+  if (!playing) k = heard.length - 1;
+  else if (now - lastRewind < 1500 || now - cur.t0 < 1200) k -= 1;
+  lastRewind = now;
+  replayFrom(Math.max(0, k));
+}
+function setPaused(on) {
+  userPaused = on;
+  if (on) { ctx.suspend(); show("paused", "P pour reprendre"); }
+  else { ctx.resume(); if (playing) show("speaking"); else playNext(); }
+  $("pause").textContent = on ? "▶ Reprendre" : "⏸ Pause";
 }
 const busy = () => playing || queue.length > 0 || serverState === "thinking" || serverState === "transcribing";
 
@@ -150,6 +188,8 @@ function markCur(it) {
 function proseSpan(text) {
   if (!pLine) pLine = addLine("p", "");
   const s = document.createElement("span"); s.className = "s"; s.textContent = text + " "; pLine.append(s);
+  s.title = "Clic : réécouter à partir d'ici";
+  s.onclick = () => { const k = heard.findIndex(h => h.el === s); if (k >= 0) replayFrom(k); };
   $("log").scrollTop = 1e9; return s;
 }
 
@@ -196,7 +236,7 @@ function connect() {
       for (const [who, t] of m.history) who === "élève" ? (addLine("u", t), pLine = null) : proseSpan(t);
     } else if (m.t === "state") {
       serverState = m.s;
-      if (!(playing && m.s === "listening") && !recording && !speaking) show(m.s);
+      if (!(playing && m.s === "listening") && !recording && !speaking && !userPaused) show(m.s);
     } else if (m.t === "gen") {
       gen = m.gen; pLine = null;
     } else if (m.t === "user") {
@@ -227,7 +267,7 @@ const dbg = (...a) => console.log(`[prof ${(performance.now() / 1000).toFixed(1)
 function bargeIn() {
   if (!busy()) return;
   const last = cur ? cur.text : "";
-  stopAll(true); ducked = false; ctx.resume();
+  stopAll(true); ducked = false; userPaused = false; $("pause").textContent = "⏸ Pause"; ctx.resume();
   gen = -1;                                          // ignore l'audio encore en vol
   send({t: "barge", last}); dbg("barge-in, dernière phrase :", last);
   addLine("tool", "(interrompu)"); pLine = null;
@@ -323,13 +363,13 @@ async function startVad() {
     onSpeechStart: () => {
       if (mode !== "auto" || muted) return;            // en mode espace le VAD ne décide de rien
       dbg("VAD : début de parole ?");
-      if (playing && !ducked) { ducked = true; ctx.suspend(); }   // pause tout de suite, peut-être un bruit
+      if (playing && !ducked && !userPaused) { ducked = true; ctx.suspend(); }   // pause tout de suite, peut-être un bruit
     },
-    onVADMisfire: () => { if (mode !== "auto") return; dbg("VAD : fausse alerte"); if (ducked) { ducked = false; ctx.resume(); } },
+    onVADMisfire: () => { if (mode !== "auto") return; dbg("VAD : fausse alerte"); if (ducked) { ducked = false; if (!userPaused) ctx.resume(); } },
     onSpeechRealStart: () => {
       if (mode !== "auto" || muted) return;
       dbg("VAD : parole confirmée"); speaking = true;
-      bargeIn(); if (ducked) { ducked = false; ctx.resume(); }
+      bargeIn(); if (ducked) { ducked = false; if (!userPaused) ctx.resume(); }
       show("recording", "tu parles… (Envoyer pour couper)");
       clearTimeout(autoTimer);
       autoTimer = setTimeout(() => { dbg(`VAD : ${MAX_AUTO_S} s sans fin de phrase, envoi forcé`); forceEnd(); }, MAX_AUTO_S * 1000);
@@ -465,6 +505,8 @@ function playSample(m) {
   if (sampleSrc) try { sampleSrc.stop(); } catch (e) {}
   sampleSrc = ctx.createBufferSource(); sampleSrc.buffer = pcmBuffer(m.pcm, m.sr); sampleSrc.connect(out); sampleSrc.start();
 }
+$("pause").onclick = () => setPaused(!userPaused);
+$("rew").onclick = rewind;
 $("gear").onclick = () => $("settings").classList.toggle("open");
 
 $("go").onclick = async () => {
@@ -490,7 +532,10 @@ document.addEventListener("keydown", e => {
   if (answerOpen && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAnswer(); return; }
   if (e.code === "Escape" && !recording && answerOpen) { closeAnswer(); return; }
   if (typing) return;
-  if (e.key.toLowerCase() === "r" && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); answerOpen ? closeAnswer() : openAnswer(); return; }
+  const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
+  if (e.key.toLowerCase() === "r" && plain) { e.preventDefault(); answerOpen ? closeAnswer() : openAnswer(); return; }
+  if (e.key.toLowerCase() === "p" && plain) { e.preventDefault(); setPaused(!userPaused); return; }
+  if (e.key === "ArrowLeft" && plain) { e.preventDefault(); rewind(); return; }
   if (!stream) return;
   if (e.code === "Space") {
     e.preventDefault(); if (e.repeat || muted) return;
