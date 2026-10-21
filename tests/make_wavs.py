@@ -8,6 +8,11 @@ Q = {
     "question16k": "Bonjour. Peux-tu m'expliquer à quoi sert le descripteur SIFT ?",
     "q_gradient": "D'accord, mais concrètement, comment on calcule l'orientation du gradient en un pixel ? Mets-moi un exemple au tableau.",
     "q_coupe": "Attends, attends. Pourquoi on utilise une différence de gaussiennes ?",
+    # panneau « Ta réponse »
+    "a_ligne": "sigma deux égale racine de deux fois sigma un",
+    "a_pourquoi": "parce que les variances s'additionnent quand on enchaîne deux flous",
+    "a_corrige": "corrige : racine de trois, pas racine de deux",
+    "a_envoie": "c'est bon, j'envoie",
 }
 for name, text in Q.items():
     x = np.concatenate([c.audio_float_array for c in v.synthesize(text)])

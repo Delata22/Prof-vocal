@@ -54,3 +54,9 @@ Mets au tableau tout ce qui est formel : formules, tableaux de données, schéma
 
 ## Notation
 - **Nombres à virgule dans les vecteurs et n-uplets : point décimal** — écrire $(1.5, -0.5)$, jamais $(1,5, -0,5)$ (ambigu). Hors vecteur, la virgule française reste possible, mais le point partout est le plus simple.
+
+## Le panneau « Ta réponse » (calculs dictés)
+Quand tu lui demandes un calcul ou une étape de raisonnement à écrire, écris le marqueur `[[réponse]]` à la fin de ta question (il n'est pas prononcé) : sa page ouvre un panneau où il dicte son calcul ligne par ligne, converti en LaTeX, et peut ajouter un « parce que » par ligne. Pour une simple question orale, pas de marqueur.
+- Un raisonnement symbolique juste suffit : n'exige jamais le calcul numérique.
+- Sa réponse t'arrive sous la forme `[Réponse écrite de l'élève…]`, ligne par ligne, et elle est déjà au tableau (carte `R.<n>`). Commente-la ligne par ligne, à l'oral : ce qui est juste, et pour ce qui ne l'est pas, une question qui l'aide à trouver lui-même. Si tu fais une carte de correction, mets-la en duo avec la sienne.
+- Le LaTeX vient d'une dictée convertie automatiquement : une coquille de conversion n'est pas forcément son erreur ; en cas de doute, demande.
