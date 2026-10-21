@@ -321,6 +321,7 @@ function startRec() {
   if (!answerOpen || playing || queue.length) bargeIn();   // dicter une ligne de calcul ne coupe que si le prof parle
   if (rec.state !== "running") rec.resume();
   recording = true; chunks = []; recT0 = performance.now();
+  if (answerOpen) $("apending").textContent = "j'enregistre ta ligne de calcul… (espace pour finir)";
   show("recording");
   recTimer = setInterval(() => {
     const t = (performance.now() - recT0) / 1000;
@@ -330,6 +331,10 @@ function startRec() {
 }
 function stopRec(sendIt) {
   if (!recording) return;
+  if (sendIt && !stopRec.tail) {               // on garde 350 ms de plus : le 2e espace arrive souvent sur la dernière syllabe
+    stopRec.tail = true; $("sub").textContent = "j'envoie…";
+    return setTimeout(() => { stopRec.tail = false; stopRec(true); }, 350);
+  }
   recording = false; clearInterval(recTimer);
   const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
   let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
@@ -433,6 +438,7 @@ function onAns(m) {
   else if (m.op === "why") { const r = lastFilled(); if (r) r.querySelector(".why").value = m.text; }
   else if (m.op === "submit") submitAnswer();
   if (m.text) $("apending").textContent = `« ${m.text} »`;
+  else if (m.op === "none") $("apending").textContent = "rien compris : redicte la ligne (en entier, et attends une demi-seconde avant le 2e espace)";
 }
 function submitAnswer() {
   const lines = aLines().map(r => ({l: r.querySelector("math-field").value.trim(), why: r.querySelector(".why").value.trim()})).filter(l => l.l);

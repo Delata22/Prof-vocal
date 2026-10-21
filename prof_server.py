@@ -92,7 +92,7 @@ class Ears:
                     seen.add(w.lower()); out.append(w)
         return out
 
-    def transcribe(self, audio):
+    def transcribe(self, audio, maths=False):
         words = self.words()
         # initial_prompt : le contexte (Whisper imite le style et l'orthographe du prompt) ;
         # hotwords : les termes techniques à favoriser.
@@ -101,6 +101,8 @@ class Ears:
         # techniques sont dans le prompt (hotwords faisait sortir de l'islandais sur un test).
         termes = ", de ".join(words[:12])
         prompt = f"Bonjour. Aujourd'hui, en cours, on parle de {self.topic}" + (f", de {termes}." if termes else ".")
+        if maths:   # dictée d'une ligne de calcul : un prompt de calcul, sinon Whisper recopie la phrase de cours
+            prompt = "D de 4 égale un seizième fois moins deux fois neuf, égale moins 1.12. Sigma 2 égale racine de 2 fois sigma 1."
         segs, _ = self.m.transcribe(audio, language="fr", beam_size=5, vad_filter=False,
                                     condition_on_previous_text=False, initial_prompt=prompt)
         segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
@@ -689,7 +691,7 @@ class Prof:
                 log(f"segment reçu : {len(raw) / sr:.1f} s à {sr} Hz, max {float(np.abs(raw).max()) if len(raw) else 0:.2f}, "
                     f"rms {rms:.3f}" + (f", ⚠ {holes} trous de silence numérique (capture ?)" if holes else ""))
                 await self.state("transcribing")
-                text = await loop.run_in_executor(None, self.ears.transcribe, audio)
+                text = await loop.run_in_executor(None, self.ears.transcribe, audio, hdr.get("target") == "answer")
                 log(f"entendu ({len(audio) / 16000:.1f} s d'audio, stt {time.time() - t0:.2f} s) : {text!r}")
                 loop.run_in_executor(None, self.keep_audio, audio, text, raw, sr)
                 if hdr.get("target") == "answer":
