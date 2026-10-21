@@ -109,7 +109,7 @@ class Ears:
     @staticmethod
     def garbage(txt):
         """Hallucination typique : autre alphabet que le latin, ou un mot répété en boucle."""
-        if re.search(r"[^\x00-\u024F\u2000-\u206F\u20AC]", txt):
+        if re.search(r"[^\x00-\u024F\u0370-\u03FF\u2000-\u206F\u20AC]", txt):
             return True
         ws = re.findall(r"\w+", txt.lower())
         return len(ws) >= 6 and max(ws.count(w) for w in set(ws)) / len(ws) > 0.3
