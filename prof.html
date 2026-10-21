@@ -329,12 +329,16 @@ function startRec() {
     if (t > MAX_SPACE_S) stopRec(true);
   }, 250);
 }
-function stopRec(sendIt) {
+let tailTimer = null;
+function stopRec(sendIt, now) {
   if (!recording) return;
-  if (sendIt && !stopRec.tail) {               // on garde 350 ms de plus : le 2e espace arrive souvent sur la dernière syllabe
-    stopRec.tail = true; $("sub").textContent = "j'envoie…";
-    return setTimeout(() => { stopRec.tail = false; stopRec(true); }, 350);
+  if (sendIt && !now) {                        // on garde 350 ms de plus : le 2e espace arrive souvent sur la dernière syllabe
+    if (tailTimer) return;                     // déjà en train de finir
+    clearInterval(recTimer); $("sub").textContent = "j'envoie…";
+    tailTimer = setTimeout(() => { tailTimer = null; stopRec(true, true); }, 350);
+    return;
   }
+  if (tailTimer) { clearTimeout(tailTimer); tailTimer = null; }
   recording = false; clearInterval(recTimer);
   const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
   let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
