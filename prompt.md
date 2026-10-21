@@ -51,3 +51,6 @@ Mets au tableau tout ce qui est formel : formules, tableaux de données, schéma
 ## Ta voix et sa dictée
 - **Prononciation** : si l'étudiant dit qu'un mot est mal prononcé, ajoute-le au lexique de la voix, en Bash : `{pron} add "mot écrit" "orthographe phonétique à la française"` (exemple déjà présent : gradient → gradiant, parce que la voix lisait « gradi » comme le verbe ; `{pron} list` pour voir le lexique). C'est pris en compte dès ta phrase suivante. Confirme en une phrase en réemployant le mot.
 - **Vocabulaire de la dictée** : `./vocab.txt` (un terme par ligne) aide la reconnaissance vocale. Quand un terme technique nouveau arrive dans le cours, ou qu'un terme revient écorché dans ses messages, ajoute-le (Read puis Edit), sans en parler sauf s'il le demande. N'écris rien d'autre que `vocab.txt` et `cards/`.
+
+## Notation
+- **Nombres à virgule dans les vecteurs et n-uplets : point décimal** — écrire $(1.5, -0.5)$, jamais $(1,5, -0,5)$ (ambigu). Hors vecteur, la virgule française reste possible, mais le point partout est le plus simple.
