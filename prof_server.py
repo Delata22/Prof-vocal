@@ -114,7 +114,10 @@ class Ears:
         if re.search(r"[^\x00-\u024F\u0370-\u03FF\u2000-\u206F\u20AC]", txt):
             return True
         ws = re.findall(r"\w+", txt.lower())
-        return len(ws) >= 6 and max(ws.count(w) for w in set(ws)) / len(ws) > 0.3
+        # boucle seulement : un mot répété au moins 8 fois et > 50 % du texte. Une dictée de calcul répète
+        # légitimement « plus », « zéro »… (« 1 plus 2 plus 3 » était rejeté avec l'ancien seuil de 30 %).
+        top = max((ws.count(w) for w in set(ws)), default=0)
+        return top >= 8 and top / len(ws) > 0.5
 
 
 # ---------------- voix : Piper ----------------
