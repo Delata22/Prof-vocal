@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prof vocal</title>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--fg:#1f1e1c;--muted:#6d6b65;--line:#e2e0d8;--acc:#185FA5;--listen:#1D9E75;--think:#BA7517;--speak:#185FA5;--red:#E24B4A}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#262624;--fg:#ecebe6;--muted:#a3a19a;--line:#3a3936;--acc:#85B7EB;--listen:#5DCAA5;--think:#EF9F27;--speak:#85B7EB}}
+*{box-sizing:border-box}
+body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+#board{flex:1;border:0;width:100%;min-height:0;background:var(--bg)}
+#bar{border-top:1px solid var(--line);display:grid;grid-template-columns:230px minmax(0,1fr) auto;gap:14px;padding:8px 14px;align-items:start;max-height:30vh}
+#st{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:500;padding-top:2px}
+#dot{width:14px;height:14px;border-radius:50%;background:var(--muted);flex:none;transition:transform .1s}
+#dot.listening{background:var(--listen)} #dot.thinking,#dot.transcribing{background:var(--think);animation:pulse 1s infinite}
+#dot.speaking{background:var(--speak)} #dot.off{background:var(--red)}
+@keyframes pulse{50%{opacity:.35}}
+#sub{color:var(--muted);font-size:13px;margin-top:2px}
+#log{overflow:auto;max-height:calc(30vh - 16px);font-size:14px}
+#log .u{color:var(--fg);font-weight:500;margin-top:6px} #log .u::before{content:"Toi : ";color:var(--muted);font-weight:400}
+#log .p{color:var(--fg)} #log .p::before{content:"Prof : ";color:var(--muted)}
+#log .p .s.cur{background:color-mix(in srgb,var(--speak) 22%,transparent);border-radius:4px}
+#log .p .s.cut{text-decoration:line-through;color:var(--muted)}
+#log .tool{color:var(--muted);font-size:12px;font-style:italic}
+#side{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+button{font:inherit;font-size:14px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:5px 12px;cursor:pointer}
+button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;border:0}
+#txt{font:inherit;font-size:13px;width:220px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg)}
+#lat{color:var(--muted);font-size:12px}
+#meter{width:120px;height:5px;background:var(--line);border-radius:3px;overflow:hidden}#meter i{display:block;height:100%;width:0;background:var(--listen)}
+#cover{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:color-mix(in srgb,var(--bg) 85%,transparent);z-index:9}
+#cover p{color:var(--muted);max-width:520px;text-align:center}
+</style>
+</head>
+<body>
+<iframe id="board"></iframe>
+<div id="bar">
+  <div><div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div><div id="meter"><i></i></div></div>
+  <div id="log"></div>
+  <div id="side">
+    <button id="mute" title="Couper / rouvrir le micro">Micro : ouvert</button>
+    <input id="txt" placeholder="ou écris ta question + Entrée">
+    <button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
+    <span id="lat"></span>
+  </div>
+</div>
+<div id="cover"><button class="big" id="go">Démarrer le cours</button>
+  <p>Un clic est nécessaire pour autoriser le micro et le son. Ensuite, parle normalement ; coupe le prof en parlant par-dessus. Casque conseillé.</p></div>
+<script>
+const $ = id => document.getElementById(id);
+let ws, gen = 0, mic = null, muted = false, micErr = "";
+const LABEL = {listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
+let serverState = "listening";
+
+// ---------- lecture audio en file ----------
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+let queue = [], cur = null, playing = false, ducked = false;
+let tSpeechEnd = null, vadWait = 0;      // pour mesurer fin de parole -> 1er son
+function pcmBuffer(b64, sr) {
+  const bin = atob(b64), n = bin.length >> 1, buf = ctx.createBuffer(1, n, sr), ch = buf.getChannelData(0);
+  const dv = new DataView(new ArrayBuffer(bin.length)); for (let i = 0; i < bin.length; i++) dv.setUint8(i, bin.charCodeAt(i));
+  for (let i = 0; i < n; i++) ch[i] = dv.getInt16(2 * i, true) / 32768;
+  return buf;
+}
+function playNext() {
+  if (playing || ducked) return;
+  const it = queue.shift();
+  if (!it) { cur = null; if (serverState === "listening" || serverState === "done") show("listening"); return; }
+  const src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(ctx.destination);
+  cur = {...it, src}; playing = true;
+  markCur(it);
+  src.onended = () => { if (cur && cur.src === src) { playing = false; cur.el && cur.el.classList.remove("cur"); cur = null; playNext(); } };
+  src.start();
+  show("speaking");
+  if (tSpeechEnd !== null && it.idx === 0) {
+    const ms = performance.now() - tSpeechEnd + vadWait;
+    $("lat").textContent = `fin de parole → 1er son : ${(ms / 1000).toFixed(2)} s`;
+    send({t: "latency", ms, vad_ms: vadWait}); tSpeechEnd = null;
+  }
+}
+function stopAll(mark) {
+  const last = cur ? cur.text : (queue[0] ? "" : "");
+  if (cur) { cur.src.onended = null; try { cur.src.stop(); } catch (e) {} if (mark && cur.el) { cur.el.classList.remove("cur"); cur.el.classList.add("cut"); } }
+  queue = []; cur = null; playing = false;
+  return last;
+}
+const busy = () => playing || queue.length > 0 || serverState === "thinking" || serverState === "transcribing";
+
+// ---------- affichage ----------
+let pLine = null;
+function show(s, detail) {
+  $("dot").className = s === "done" ? "listening" : s;
+  $("stt").textContent = LABEL[s] || s;
+  if (detail !== undefined) $("sub").textContent = detail;
+  if (s === "listening") $("sub").textContent = micErr || (muted ? "micro coupé" : "");
+}
+function addLine(cls, text) {
+  const d = document.createElement("div"); d.className = cls; d.textContent = text; $("log").append(d);
+  $("log").scrollTop = 1e9; return d;
+}
+function markCur(it) {
+  if (!it.el) return; it.el.classList.add("cur"); $("log").scrollTop = 1e9;
+}
+function proseSpan(text) {
+  if (!pLine) pLine = addLine("p", "");
+  const s = document.createElement("span"); s.className = "s"; s.textContent = text + " "; pLine.append(s);
+  $("log").scrollTop = 1e9; return s;
+}
+
+// ---------- websocket ----------
+function send(o) { if (ws && ws.readyState === 1) ws.send(typeof o === "string" || o instanceof ArrayBuffer ? o : JSON.stringify(o)); }
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`); ws.binaryType = "arraybuffer";
+  ws.onopen = () => show("listening");
+  ws.onclose = () => { show("off"); setTimeout(connect, 1500); };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.t === "info") {
+      if (!$("board").src) $("board").src = `http://localhost:8777/s/${m.slug}`;
+      document.title = `Prof · ${m.topic}`;
+      $("log").innerHTML = ""; pLine = null;
+      for (const [who, t] of m.history) who === "élève" ? (addLine("u", t), pLine = null) : proseSpan(t);
+    } else if (m.t === "state") {
+      serverState = m.s;
+      if (!(playing && m.s === "listening")) show(m.s);
+    } else if (m.t === "gen") {
+      gen = m.gen; pLine = null;
+    } else if (m.t === "user") {
+      addLine("u", m.text); pLine = null;
+    } else if (m.t === "say") {
+      if (m.gen !== gen) return;
+      const el = proseSpan(m.text);
+      queue.push({gen: m.gen, idx: m.idx, text: m.text, el, buf: pcmBuffer(m.pcm, m.sr)});
+      playNext();
+    } else if (m.t === "tool") {
+      addLine("tool", m.text); pLine = null;
+      if (!playing) show("thinking", m.text);
+    } else if (m.t === "done") {
+      if (m.gen === gen) { serverState = "done"; if (!playing && !queue.length) show("listening"); }
+    }
+  };
+}
+
+// ---------- micro + VAD ----------
+const REDEMPTION_MS = 550;
+async function startMic() {
+  mic = await vad.MicVAD.new({
+    model: "v5",
+    baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
+    onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
+    positiveSpeechThreshold: 0.6, negativeSpeechThreshold: 0.4,
+    redemptionMs: REDEMPTION_MS, minSpeechMs: 250, preSpeechPadMs: 300,
+    getStream: () => navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}}),
+    onFrameProcessed: p => { $("meter").firstChild.style.width = Math.round(p.isSpeech * 100) + "%"; },
+    onSpeechStart: () => {
+      // on baisse tout de suite (pause), sans encore jeter : peut-être un bruit
+      if (playing && !ducked) { ducked = true; ctx.suspend(); }
+    },
+    onVADMisfire: () => { if (ducked) { ducked = false; ctx.resume(); } },
+    onSpeechRealStart: () => {
+      // vraie parole : barge-in
+      if (busy()) {
+        const last = cur ? cur.text : "";
+        stopAll(true); ducked = false; ctx.resume();
+        gen = -1;                                        // ignore l'audio en vol
+        send({t: "barge", last});
+        addLine("tool", "(interrompu)"); pLine = null;
+      } else if (ducked) { ducked = false; ctx.resume(); }
+      show("listening", "tu parles…");
+    },
+    onSpeechEnd: audio => {
+      // la parole a fini ~REDEMPTION_MS avant cet événement (le VAD attend ce silence pour conclure)
+      tSpeechEnd = performance.now(); vadWait = REDEMPTION_MS;
+      send(audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength));
+    },
+  });
+  mic.start();
+}
+
+$("go").onclick = async () => {
+  await ctx.resume();
+  try { await startMic(); show("listening"); }
+  catch (e) { console.error(e); micErr = "micro indisponible (" + e.name + ") : écris tes questions"; $("mute").textContent = "Micro : absent"; show("listening"); }
+  $("cover").remove();
+  send({t: "start"});
+};
+$("mute").onclick = () => {
+  muted = !muted; $("mute").textContent = muted ? "Micro : coupé" : "Micro : ouvert";
+  if (mic) muted ? mic.pause() : mic.start();
+  show(serverState === "done" ? "listening" : serverState);
+};
+$("txt").onkeydown = e => {
+  if (e.key !== "Enter" || !$("txt").value.trim()) return;
+  if (busy()) { const last = cur ? cur.text : ""; stopAll(true); gen = -1; send({t: "barge", last}); }
+  tSpeechEnd = performance.now(); vadWait = 0;
+  send({t: "text", text: $("txt").value.trim()}); $("txt").value = "";
+};
+$("test").onclick = async () => {
+  // simule une prise de parole : wav 16 kHz mono -> Float32 -> serveur (comme le VAD)
+  const ab = await (await fetch("/tests/question16k.wav")).arrayBuffer();
+  const off = new OfflineAudioContext(1, 1, 16000);
+  const buf = await off.decodeAudioData(ab);
+  if (busy()) { const last = cur ? cur.text : ""; stopAll(true); gen = -1; send({t: "barge", last}); }
+  const f = buf.getChannelData(0).slice();
+  tSpeechEnd = performance.now(); vadWait = 0;
+  send(f.buffer);
+};
+connect();
+</script>
+</body>
+</html>
