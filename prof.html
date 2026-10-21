@@ -57,6 +57,7 @@ let serverState = "listening";
 
 // ---------- lecture audio en file ----------
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
+const out = ctx.createGain(); out.gain.value = new URLSearchParams(location.search).has("mute") ? 0 : 1; out.connect(ctx.destination);  // ?mute : tests automatiques sans son
 let queue = [], cur = null, playing = false, ducked = false;
 let tSpeechEnd = null, vadWait = 0;      // pour mesurer fin de parole -> 1er son
 function pcmBuffer(b64, sr) {
@@ -69,7 +70,7 @@ function playNext() {
   if (playing || ducked) return;
   const it = queue.shift();
   if (!it) { cur = null; if (serverState === "listening" || serverState === "done") show("listening"); return; }
-  const src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(ctx.destination);
+  const src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(out);
   cur = {...it, src}; playing = true;
   markCur(it);
   src.onended = () => { if (cur && cur.src === src) { playing = false; cur.el && cur.el.classList.remove("cur"); cur = null; playNext(); } };
