@@ -289,7 +289,11 @@ class Prof:
 
     async def kickoff(self):
         if self.brain.fresh:
-            await self.question(f"[Séance : début du cours sur « {self.a.topic} ». Salue-le en une phrase, "
+            p = await asyncio.create_subprocess_exec("python3", str(CAHIER), "state", self.a.slug,
+                                                     stdout=asyncio.subprocess.PIPE)
+            board = (await p.communicate())[0].decode().strip()
+            board = f" Le tableau contient déjà des cartes d'une séance précédente :\n{board}\n" if "\t" in board else ""
+            await self.question(f"[Séance : début du cours sur « {self.a.topic} ».{board} Salue-le en une phrase, "
                                 "puis demande-lui en une question ce qu'il sait déjà ou par où il veut commencer.]")
             self.history.pop()
 
