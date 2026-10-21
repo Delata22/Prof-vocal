@@ -11,6 +11,12 @@ micro (page, VAD Silero) ──segment──▶ Whisper large-v3-turbo (GPU)
         └── iframe ◀── cahier :8777 ◀───────┘
 ```
 
+## Installer
+
+```bash
+uv venv -p 3.12 .venv && uv pip install -p .venv/bin/python -r requirements.txt
+```
+
 ## Lancer
 
 ```bash
