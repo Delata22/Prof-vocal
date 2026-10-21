@@ -208,12 +208,19 @@ class Brain:
                 "--verbose", "--include-partial-messages",
                 "--setting-sources", "",                 # pas de hooks utilisateur (récap quotidien...)
                 "--model", self.model, "--effort", self.effort,
+                # pas d'auto-mémoire (elle autorise des écritures dans ~/.claude/projects/…/memory) ;
+                # deny explicite sur ~/.claude, au cas où
+                "--settings", json.dumps({"autoMemoryEnabled": False, "permissions": {"deny": [
+                    "Edit(~/.claude/**)", f"Edit(/{Path.home()}/.claude/**)",
+                    "Read(~/.claude/projects/**)", f"Read(/{Path.home()}/.claude/projects/**)"]}}),
                 "--tools", "Bash,Write,Read,Edit", "--allowedTools", *allowed, "--permission-mode", "dontAsk",
                 "--append-system-prompt", system]
         if self.meta.get("session_id"):
             args += ["--resume", self.meta["session_id"]]
+        env = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
+        env.pop("LD_LIBRARY_PATH", None)
         self.proc = await asyncio.create_subprocess_exec(
-            *args, cwd=self.dir, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            *args, cwd=self.dir, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024)
         self.pending = []
         asyncio.create_task(self._read())
@@ -453,6 +460,7 @@ class Prof:
             if msg.type == WSMsgType.BINARY:
                 t0 = time.time()
                 audio = np.frombuffer(msg.data, np.float32)
+                log(f"segment reçu : {len(audio) / 16000:.1f} s, niveau max {float(np.abs(audio).max()) if len(audio) else 0:.2f}")
                 await self.state("transcribing")
                 text = await loop.run_in_executor(None, self.ears.transcribe, audio)
                 log(f"entendu ({len(audio) / 16000:.1f} s d'audio, stt {time.time() - t0:.2f} s) : {text!r}")

@@ -16,7 +16,8 @@ body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--b
 #st{display:flex;align-items:center;gap:10px;font-size:17px;font-weight:500;padding-top:2px}
 #dot{width:14px;height:14px;border-radius:50%;background:var(--muted);flex:none;transition:transform .1s}
 #dot.listening{background:var(--listen)} #dot.thinking,#dot.transcribing{background:var(--think);animation:pulse 1s infinite}
-#dot.speaking{background:var(--speak)} #dot.off{background:var(--red)}
+#dot.speaking{background:var(--speak)} #dot.recording{background:var(--red);animation:pulse .8s infinite}
+body.rec #bar{background:color-mix(in srgb,var(--red) 14%,transparent)} body.rec #stt{color:var(--red)} #dot.off{background:var(--red)}
 @keyframes pulse{50%{opacity:.35}}
 #sub{color:var(--muted);font-size:13px;margin-top:2px}
 #log{overflow:auto;max-height:calc(30vh - 16px);font-size:14px}
@@ -41,6 +42,8 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
   <div><div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div><div id="meter"><i></i></div></div>
   <div id="log"></div>
   <div id="side">
+    <div style="display:flex;gap:6px"><button id="mode" title="espace : appui = j'enregistre, 2e appui = j'envoie ; auto : détection de fin de phrase">Mode : espace</button>
+    <button id="send" title="Espace">Parler / Envoyer</button></div>
     <button id="mute" title="Couper / rouvrir le micro">Micro : ouvert</button>
     <input id="txt" placeholder="ou écris ta question + Entrée">
     <button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
@@ -48,11 +51,11 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
   </div>
 </div>
 <div id="cover"><button class="big" id="go">Démarrer le cours</button>
-  <p>Un clic est nécessaire pour autoriser le micro et le son. Ensuite, parle normalement ; coupe le prof en parlant par-dessus. Casque conseillé.</p></div>
+  <p>Un clic est nécessaire pour autoriser le micro et le son.<br><b>Espace</b> : un appui = j'enregistre (et le prof se tait), un 2e appui = j'envoie. Échap annule.<br>Le mode « auto » détecte seul la fin de tes phrases (moins fiable avec du bruit).</p></div>
 <script>
 const $ = id => document.getElementById(id);
 let ws, gen = 0, mic = null, muted = false, micErr = "";
-const LABEL = {listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
+const LABEL = {recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
 let serverState = "listening";
 
 // ---------- lecture audio en file ----------
@@ -78,7 +81,7 @@ function playNext() {
   show("speaking");
   if (tSpeechEnd !== null && it.idx === 0) {
     const ms = performance.now() - tSpeechEnd + vadWait;
-    $("lat").textContent = `fin de parole → 1er son : ${(ms / 1000).toFixed(2)} s`;
+    $("lat").dataset.l = `fin de parole → 1er son : ${(ms / 1000).toFixed(2)} s`; renderLat();
     send({t: "latency", ms, vad_ms: vadWait}); tSpeechEnd = null;
   }
 }
@@ -96,7 +99,8 @@ function show(s, detail) {
   $("dot").className = s === "done" ? "listening" : s;
   $("stt").textContent = LABEL[s] || s;
   if (detail !== undefined) $("sub").textContent = detail;
-  if (s === "listening") $("sub").textContent = micErr || (muted ? "micro coupé" : "");
+  if (s === "listening") $("sub").textContent = micErr || (muted ? "micro coupé" : mode === "espace" ? "espace pour parler" : "parle quand tu veux");
+  document.body.classList.toggle("rec", s === "recording");
 }
 function addLine(cls, text) {
   const d = document.createElement("div"); d.className = cls; d.textContent = text; $("log").append(d);
@@ -126,7 +130,7 @@ function connect() {
       for (const [who, t] of m.history) who === "élève" ? (addLine("u", t), pLine = null) : proseSpan(t);
     } else if (m.t === "state") {
       serverState = m.s;
-      if (!(playing && m.s === "listening")) show(m.s);
+      if (!(playing && m.s === "listening") && !recording && !speaking) show(m.s);
     } else if (m.t === "gen") {
       gen = m.gen; pLine = null;
     } else if (m.t === "user") {
@@ -145,54 +149,157 @@ function connect() {
   };
 }
 
-// ---------- micro + VAD ----------
-const REDEMPTION_MS = 550;
-async function startMic() {
+// ---------- micro ----------
+// Deux modes : « espace » (défaut : un appui commence l'enregistrement, un 2e appui l'envoie ; fiable même avec du bruit)
+// et « auto » (VAD Silero : la fin de phrase est détectée toute seule).
+const REDEMPTION_MS = 550, MAX_AUTO_S = 20, MAX_SPACE_S = 60;
+let mode = "espace", stream = null, rec = null, recording = false, chunks = [], recT0 = 0, recTimer = null, autoTimer = null;
+try { mode = localStorage.getItem("prof-mode") || "espace"; } catch (e) {}
+let noise = {sum: 0, n: 0}, speaking = false;
+const dbg = (...a) => console.log(`[prof ${(performance.now() / 1000).toFixed(1)}s]`, ...a);
+
+function bargeIn() {
+  if (!busy()) return;
+  const last = cur ? cur.text : "";
+  stopAll(true); ducked = false; ctx.resume();
+  gen = -1;                                          // ignore l'audio encore en vol
+  send({t: "barge", last}); dbg("barge-in, dernière phrase :", last);
+  addLine("tool", "(interrompu)"); pLine = null;
+}
+function sendSegment(f32, why) {
+  const sec = f32.length / 16000;
+  if (sec < 0.3) { dbg("segment trop court, ignoré", sec); show("listening"); return; }
+  if (!ws || ws.readyState !== 1) { dbg("segment PERDU : websocket fermée", ws && ws.readyState); show("listening", "segment perdu : connexion au serveur coupée"); return; }
+  ws.send(f32.buffer.slice(f32.byteOffset, f32.byteOffset + f32.byteLength));
+  dbg(`segment envoyé (${why}) : ${sec.toFixed(1)} s`);
+  show("transcribing", `envoyé : ${sec.toFixed(1)} s d'audio`);
+}
+
+// --- mode espace : enregistrement brut 16 kHz ---
+async function startRecorder() {
+  rec = new AudioContext({sampleRate: 16000});
+  const src = rec.createMediaStreamSource(stream), proc = rec.createScriptProcessor(4096, 1, 1), sink = rec.createGain();
+  sink.gain.value = 0;
+  proc.onaudioprocess = e => {
+    const x = e.inputBuffer.getChannelData(0);
+    if (recording) chunks.push(new Float32Array(x));
+    if (mode === "espace") {
+      let r = 0; for (let i = 0; i < x.length; i++) r += x[i] * x[i];
+      $("meter").firstChild.style.width = Math.min(100, Math.round(Math.sqrt(r / x.length) * 600)) + "%";
+    }
+  };
+  src.connect(proc); proc.connect(sink); sink.connect(rec.destination);
+}
+function startRec() {
+  if (recording) return;
+  bargeIn();
+  if (rec.state !== "running") rec.resume();
+  recording = true; chunks = []; recT0 = performance.now();
+  show("recording");
+  recTimer = setInterval(() => {
+    const t = (performance.now() - recT0) / 1000;
+    $("sub").textContent = `${t.toFixed(0)} s — espace pour envoyer, Échap pour annuler`;
+    if (t > MAX_SPACE_S) stopRec(true);
+  }, 250);
+}
+function stopRec(sendIt) {
+  if (!recording) return;
+  recording = false; clearInterval(recTimer);
+  const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
+  let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
+  chunks = [];
+  if (!sendIt) { dbg("enregistrement annulé"); show("listening"); return; }
+  tSpeechEnd = performance.now(); vadWait = 0;
+  sendSegment(f, "espace");
+}
+
+// --- mode auto : VAD ---
+async function startVad() {
   mic = await vad.MicVAD.new({
     model: "v5",
     baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/",
     onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
-    positiveSpeechThreshold: 0.6, negativeSpeechThreshold: 0.4,
+    positiveSpeechThreshold: 0.6, negativeSpeechThreshold: 0.45,
     redemptionMs: REDEMPTION_MS, minSpeechMs: 250, preSpeechPadMs: 300,
-    getStream: () => navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}}),
-    onFrameProcessed: p => { $("meter").firstChild.style.width = Math.round(p.isSpeech * 100) + "%"; },
-    onSpeechStart: () => {
-      // on baisse tout de suite (pause), sans encore jeter : peut-être un bruit
-      if (playing && !ducked) { ducked = true; ctx.suspend(); }
+    submitUserSpeechOnPause: true,                     // pause() = « envoie ce que tu as »
+    startOnLoad: false,
+    getStream: async () => stream,
+    pauseStream: async () => {}, resumeStream: async s => s,   // le flux est partagé avec l'enregistreur
+    onFrameProcessed: p => {
+      if (mode !== "auto") return;
+      $("meter").firstChild.style.width = Math.round(p.isSpeech * 100) + "%";
+      if (!speaking) { noise.sum += p.isSpeech; noise.n++; }
+      if (noise.n >= 150) {                            // ~5 s : proba moyenne pendant le silence
+        $("lat").dataset.noise = `VAD au repos : ${(noise.sum / noise.n).toFixed(2)}`; dbg($("lat").dataset.noise);
+        noise = {sum: 0, n: 0}; renderLat();
+      }
     },
-    onVADMisfire: () => { if (ducked) { ducked = false; ctx.resume(); } },
+    onSpeechStart: () => {
+      dbg("VAD : début de parole ?");
+      if (playing && !ducked) { ducked = true; ctx.suspend(); }   // pause tout de suite, peut-être un bruit
+    },
+    onVADMisfire: () => { dbg("VAD : fausse alerte"); if (ducked) { ducked = false; ctx.resume(); } },
     onSpeechRealStart: () => {
-      // vraie parole : barge-in
-      if (busy()) {
-        const last = cur ? cur.text : "";
-        stopAll(true); ducked = false; ctx.resume();
-        gen = -1;                                        // ignore l'audio en vol
-        send({t: "barge", last});
-        addLine("tool", "(interrompu)"); pLine = null;
-      } else if (ducked) { ducked = false; ctx.resume(); }
-      show("listening", "tu parles…");
+      dbg("VAD : parole confirmée"); speaking = true;
+      bargeIn(); if (ducked) { ducked = false; ctx.resume(); }
+      show("recording", "tu parles… (Envoyer pour couper)");
+      clearTimeout(autoTimer);
+      autoTimer = setTimeout(() => { dbg(`VAD : ${MAX_AUTO_S} s sans fin de phrase, envoi forcé`); forceEnd(); }, MAX_AUTO_S * 1000);
     },
     onSpeechEnd: audio => {
+      speaking = false; clearTimeout(autoTimer);
+      dbg("VAD : fin de parole");
       // la parole a fini ~REDEMPTION_MS avant cet événement (le VAD attend ce silence pour conclure)
       tSpeechEnd = performance.now(); vadWait = REDEMPTION_MS;
-      send(audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength));
+      sendSegment(audio, "VAD");
     },
   });
-  mic.start();
+}
+async function forceEnd() {
+  if (!mic || mode !== "auto") return;
+  clearTimeout(autoTimer); speaking = false;
+  await mic.pause(); if (!muted) mic.start();        // pause() soumet le segment en cours
+}
+function renderLat() { $("lat").textContent = [$("lat").dataset.l, $("lat").dataset.noise].filter(Boolean).join(" · "); }
+
+async function setMode(m) {
+  mode = m; try { localStorage.setItem("prof-mode", m); } catch (e) {}
+  $("mode").textContent = m === "espace" ? "Mode : espace" : "Mode : auto (VAD)";
+  if (recording) stopRec(false);
+  if (mic) { if (m === "auto" && !muted) mic.start(); else await mic.pause(); }
+  dbg("mode", m);
+  show(serverState === "done" ? "listening" : serverState);
 }
 
 $("go").onclick = async () => {
   await ctx.resume();
-  try { await startMic(); show("listening"); }
-  catch (e) { console.error(e); micErr = "micro indisponible (" + e.name + ") : écris tes questions"; $("mute").textContent = "Micro : absent"; show("listening"); }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1}});
+    await startRecorder();
+    try { await startVad(); } catch (e) { console.error(e); dbg("VAD indisponible", e); }
+    await setMode(mic ? mode : "espace");
+  } catch (e) { console.error(e); micErr = "micro indisponible (" + e.name + ") : écris tes questions"; $("mute").textContent = "Micro : absent"; show("listening"); }
   $("cover").remove();
   send({t: "start"});
 };
+$("mode").onclick = () => setMode(mode === "espace" ? "auto" : "espace");
+$("send").onclick = () => mode === "espace" ? (recording ? stopRec(true) : startRec()) : forceEnd();
 $("mute").onclick = () => {
   muted = !muted; $("mute").textContent = muted ? "Micro : coupé" : "Micro : ouvert";
-  if (mic) muted ? mic.pause() : mic.start();
+  if (muted && recording) stopRec(false);
+  if (mic && mode === "auto") muted ? mic.pause() : mic.start();
   show(serverState === "done" ? "listening" : serverState);
 };
+document.addEventListener("keydown", e => {
+  if (e.target === $("txt") || !stream) return;
+  if (e.code === "Space") {
+    e.preventDefault(); if (e.repeat || muted) return;
+    if (mode === "espace") recording ? stopRec(true) : startRec();
+    else forceEnd();
+  } else if (e.code === "Escape" && recording) stopRec(false);
+});
+// un clic dans le tableau (iframe) lui donne le clavier : on le reprend pour que espace marche toujours
+window.addEventListener("blur", () => setTimeout(() => { if (document.activeElement === $("board")) $("board").blur(); window.focus(); }, 200));
 $("txt").onkeydown = e => {
   if (e.key !== "Enter" || !$("txt").value.trim()) return;
   if (busy()) { const last = cur ? cur.text : ""; stopAll(true); gen = -1; send({t: "barge", last}); }
