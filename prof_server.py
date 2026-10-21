@@ -108,7 +108,10 @@ class Ears:
                                     condition_on_previous_text=False, initial_prompt=prompt)
         segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
         txt = " ".join(s.text.strip() for s in segs).strip()
-        copie = txt.lower().strip(" .") in prompt.lower()          # Whisper recopie le prompt sur un son trop court
+        # Whisper recopie le prompt sur un son trop court ; mais une vraie phrase peut ressembler à un bout
+        # du prompt (« soit n un entier ») : on ne rejette qu'une copie d'au moins la moitié du prompt.
+        t = txt.lower().strip(" .")
+        copie = t in prompt.lower() and len(t) > 0.5 * len(prompt)
         return "" if self.HALLU.search(txt) or self.garbage(txt) or copie else txt
 
     @staticmethod
