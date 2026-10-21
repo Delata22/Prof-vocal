@@ -450,7 +450,15 @@ class Prof:
     async def handle_ws(self, req):
         ws = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024, heartbeat=20)
         await ws.prepare(req)
-        self.ws = ws
+        old, self.ws = self.ws, ws
+        if old is not None and not old.closed:
+            # une seule page active : la dernière ouverte gagne, l'ancienne est prévenue
+            log("autre page déjà connectée : elle est remplacée")
+            try:
+                await old.send_str(json.dumps({"t": "replaced"}))
+                await old.close(code=4001, message=b"ouverte ailleurs")
+            except Exception:
+                pass
         log("page connectée")
         await self.send({"t": "info", "slug": self.a.slug, "topic": self.a.topic, "model": self.a.model,
                          "history": self.history[-12:]})

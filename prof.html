@@ -32,6 +32,8 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #txt{font:inherit;font-size:13px;width:220px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg)}
 #lat{color:var(--muted);font-size:12px}
 #meter{width:120px;height:5px;background:var(--line);border-radius:3px;overflow:hidden}#meter i{display:block;height:100%;width:0;background:var(--listen)}
+#log .err{color:var(--red);font-size:13px}
+#cover2{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:color-mix(in srgb,var(--bg) 92%,transparent);z-index:10;text-align:center}
 #cover{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:color-mix(in srgb,var(--bg) 85%,transparent);z-index:9}
 #cover p{color:var(--muted);max-width:520px;text-align:center}
 </style>
@@ -116,13 +118,36 @@ function proseSpan(text) {
 }
 
 // ---------- websocket ----------
-function send(o) { if (ws && ws.readyState === 1) ws.send(typeof o === "string" || o instanceof ArrayBuffer ? o : JSON.stringify(o)); }
+let replaced = false;
+function replacedCover() {
+  stopAll(false); if (recording) stopRec(false); if (mic) mic.pause();
+  show("off", "page ouverte ailleurs");
+  if ($("cover2")) return;
+  const c = document.createElement("div"); c.id = "cover2"; c.className = "cover";
+  c.innerHTML = `<p><b>Le Prof est ouvert dans un autre onglet.</b><br>Une seule page peut être active à la fois.</p><button class="big">Reprendre ici</button>`;
+  c.querySelector("button").onclick = () => location.reload();
+  document.body.append(c);
+}
+// toute erreur JS est affichée dans la barre (et pas seulement dans la console)
+function showErr(msg) {
+  console.error(msg); const d = addLine("err", "⚠ " + msg); pLine = null;
+  $("sub").textContent = "⚠ erreur : " + String(msg).slice(0, 120);
+}
+window.addEventListener("error", e => showErr(e.message + (e.lineno ? ` (ligne ${e.lineno})` : "")));
+window.addEventListener("unhandledrejection", e => showErr((e.reason && (e.reason.message || e.reason)) || "promesse rejetée"));
+function send(o) {
+  if (!ws || ws.readyState !== 1) { showErr("pas connecté au serveur : message non envoyé"); return; }
+  ws.send(typeof o === "string" || o instanceof ArrayBuffer ? o : JSON.stringify(o)); }
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`); ws.binaryType = "arraybuffer";
   ws.onopen = () => show("listening");
-  ws.onclose = () => { show("off"); setTimeout(connect, 1500); };
+  ws.onclose = e => {
+    if (e.code === 4001 || replaced) { replacedCover(); return; }   // une autre page a pris la main : pas de reconnexion
+    show("off"); setTimeout(connect, 1500);
+  };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
+    if (m.t === "replaced") { replaced = true; replacedCover(); return; }
     if (m.t === "info") {
       if (!$("board").src) $("board").src = `http://localhost:8777/s/${m.slug}`;
       document.title = `Prof · ${m.topic}`;

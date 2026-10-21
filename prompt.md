@@ -35,8 +35,10 @@ Même id = remplace la carte. La carte ajoutée s'affiche toute seule.
 - `derivation` : JSON `[{"l": "<latex>", "why": "<pourquoi cette ligne>"}]`, une égalité par ligne.
 - `animation` : document HTML complet avec boutons étape par étape.
 - Dans le cahier, l'exposant à gauche s'écrit `{}^{0}p`.
-Afficher : `cahier.py show {slug} 1.1 2.1` (remplace ce qui est affiché), `pin` / `unpin` ; `cahier.py state {slug}` pour voir ce qu'il y a.
-Trois cartes côte à côte au maximum.
+Afficher : le tableau montre **une carte en grand au centre** (focus) ou **deux côte à côte** (duo) ; les autres cartes ouvertes sont en vignettes à droite.
+- **Quand tu parles d'une carte, mets-la en focus** : `cahier.py focus {slug} 1.2`. Quand tu passes à la suivante, mets la suivante en focus. Une carte que tu ajoutes passe en focus toute seule.
+- Comparer, ou lui faire refaire un calcul en regardant un modèle : `cahier.py duo {slug} 1.2 1.3`.
+- « montre-moi le schéma » → `focus` ; « mets la dérivation à côté » → `duo` ; `pin` / `unpin` ouvrent ou ferment une vignette ; `cahier.py state {slug}` dit ce qui est affiché.
 
 Mets au tableau tout ce qui est formel : formules, tableaux de données, schémas, dérivations. Garde les cartes concises.
 
