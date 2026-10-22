@@ -36,6 +36,8 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #lat{color:var(--muted);font-size:12px}
 #meter{width:120px;height:5px;background:var(--line);border-radius:3px;overflow:hidden}#meter i{display:block;height:100%;width:0;background:var(--listen)}
 #log .u .shows{color:var(--acc);font-weight:400;font-size:13px}
+#silentbtn.on{background:var(--think);color:#fff;border-color:var(--think);font-weight:600}
+body.silent #bar{box-shadow:inset 0 3px 0 var(--think)} #dot.reading{background:var(--think)}
 #log .err{color:var(--red);font-size:13px}
 #answer{display:none;position:fixed;left:14px;right:300px;bottom:calc(30vh + 8px);max-height:55vh;overflow:auto;background:var(--card);border:2px solid var(--acc);border-radius:12px;padding:10px 14px;z-index:7;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 #answer.open{display:flex}
@@ -78,6 +80,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <div style="display:flex;gap:6px"><button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
     <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button>
     <button id="homebtn" title="Revenir à la liste des boards (Ctrl+H)" hidden>⌂ Boards</button></div>
+    <button id="silentbtn" title="Touche S : pas de voix, pas de micro ; tu lis et tu écris">🔊 Voix (S)</button>
     <div style="display:flex;gap:6px"><button id="rew" title="Flèche gauche : reprendre la phrase ; 2 appuis rapides : la précédente">⏮ Phrase</button>
     <button id="pause" title="Touche P">⏸ Pause</button>
     <button id="answerbtn" title="Touche R">✎ Ta réponse (R)</button></div>
@@ -118,7 +121,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
 const $ = id => document.getElementById(id);
 let ws, gen = 0, mic = null, muted = false, micErr = "";
 let micReady = false, starting = false, recKeyT = 0, firstChunkT = null;   // micro autorisé ; ouverture à la demande
-const LABEL = {paused: "⏸ en pause", recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
+const LABEL = {reading: "📖 à lire", paused: "⏸ en pause", recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
 let serverState = "listening";
 
 // ---------- lecture audio en file ----------
@@ -137,7 +140,16 @@ function playNext() {
   if (playing || ducked || userPaused) return;
   const it = queue.shift();
   if (!it) { cur = null; if (serverState === "listening" || serverState === "done") show("listening"); return; }
-  const src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(out);
+  let src;
+  if (it.buf) { src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(out); }
+  else {
+    // mode silencieux : pas d'audio ; la phrase « dure » le temps de la lire (~4 mots/s, 1.2 à 7 s),
+    // pour que les repères ⟦mark⟧ suivent la lecture comme ils suivraient la voix
+    const words = (it.text || "").split(/\s+/).filter(Boolean).length;
+    const dur = it.text ? Math.min(7000, Math.max(1200, words * 260)) : 50;
+    let tm = null;
+    src = {onended: null, start() { tm = setTimeout(() => this.onended && this.onended(), dur); }, stop() { clearTimeout(tm); }};
+  }
   cur = {...it, src, t0: performance.now()}; playing = true;
   heard.push(it); pruneHeard();
   if (it.el) it.el.classList.remove("cut");
@@ -147,7 +159,7 @@ function playNext() {
   // repères du prof (⟦mark …⟧) : exécutés quand la phrase commence à être jouée — à chaque fois, donc aussi
   // quand on la réécoute ; une phrase jamais jouée (interruption) n'exécute rien
   if (it.cues && it.cues.length) { send({t: "cue", cues: it.cues, idx: it.idx}); dbg("phrase jouée + repères", it.idx, it.cues); }
-  show("speaking");
+  show(it.buf ? "speaking" : "reading");
   if (tSpeechEnd !== null && it.idx === 0) {
     const ms = performance.now() - tSpeechEnd + vadWait;
     $("lat").dataset.l = `fin de parole → 1er son : ${(ms / 1000).toFixed(2)} s`; renderLat();
@@ -187,8 +199,9 @@ function rewind() {
 }
 function setPaused(on) {
   userPaused = on;
-  if (on) { ctx.suspend(); show("paused", "P pour reprendre"); }
-  else { ctx.resume(); if (playing) show("speaking"); else playNext(); }
+  const textOnly = cur && !cur.buf;               // mode silencieux : la phrase en cours est un minuteur de lecture
+  if (on) { ctx.suspend(); if (textOnly) cur.src.stop(); show("paused", "P pour reprendre"); }
+  else { ctx.resume(); if (playing) { if (textOnly) cur.src.start(); show(textOnly ? "reading" : "speaking"); } else playNext(); }
   $("pause").textContent = on ? "▶ Reprendre" : "⏸ Pause";
 }
 const busy = () => playing || queue.length > 0 || serverState === "thinking" || serverState === "transcribing";
@@ -199,7 +212,7 @@ function show(s, detail) {
   $("dot").className = s === "done" ? "listening" : s;
   $("stt").textContent = LABEL[s] || s;
   if (detail !== undefined) $("sub").textContent = detail;
-  if (s === "listening") $("sub").textContent = micErr || (muted ? "micro coupé" : mode === "espace" ? "espace pour parler" : "parle quand tu veux");
+  if (s === "listening") $("sub").textContent = silent ? "mode silencieux : écris ta question (espace → champ texte)" : micErr || (muted ? "micro coupé" : mode === "espace" ? "espace pour parler" : "parle quand tu veux");
   document.body.classList.toggle("rec", s === "recording");
 }
 function addLine(cls, text) {
@@ -258,8 +271,9 @@ function connect() {
     }
     if (m.t === "open_answer") { openAnswer(); return; }
     if (m.t === "sample") { playSample(m); return; }
+    if (m.t === "silent") { setSilentUI(m.on); return; }
     if (m.t === "info") {
-      fillVoices(m.voices, m.voice);
+      fillVoices(m.voices, m.voice); setSilentUI(!!m.silent);
       if (!$("board").src) $("board").src = `http://localhost:8777/s/${m.slug}`;
       document.title = `Prof · ${m.topic}`;
       $("log").innerHTML = ""; pLine = null;
@@ -275,7 +289,7 @@ function connect() {
     } else if (m.t === "say") {
       if (m.gen !== gen) return;
       const el = m.text ? proseSpan(m.text) : null;
-      queue.push({gen: m.gen, idx: m.idx, text: m.text, el, cues: m.cues || [], buf: pcmBuffer(m.pcm, m.sr)});
+      queue.push({gen: m.gen, idx: m.idx, text: m.text, el, cues: m.cues || [], buf: m.pcm ? pcmBuffer(m.pcm, m.sr) : null});
       playNext();
     } else if (m.t === "tool") {
       addLine("tool", m.text); pLine = null;
@@ -373,7 +387,7 @@ function sendPartial() {
   ws.send(f.buffer);
 }
 async function startRec() {
-  if (recording || starting) return;
+  if (recording || starting || silent) return;
   starting = true; recKeyT = performance.now(); firstChunkT = null;
   show("recording", "ouverture du micro…");
   try { await acquire(); }
@@ -597,6 +611,7 @@ async function pickDefaultMic() {
   if (choice) { setPref("prof-mic", choice.deviceId); dbg("micro par défaut :", choice.label); }
 }
 async function vadOn() {
+  if (silent) return;
   await acquire();
   vadOff();
   try { await startVad(); if (!muted) mic.start(); } catch (e) { console.error(e); dbg("VAD indisponible", e); }
@@ -719,11 +734,37 @@ function playSample(m) {
 }
 $("pause").onclick = () => setPaused(!userPaused);
 $("rew").onclick = rewind;
+// MathLive : dossier des polices explicite (sinon « fonts-did-not-load » selon le chargement), et pas de sons de frappe
+window.addEventListener("load", () => {
+  if (window.MathfieldElement) {
+    MathfieldElement.fontsDirectory = "https://cdn.jsdelivr.net/npm/mathlive@0.109.2/fonts/";
+    MathfieldElement.soundsDirectory = null;
+    MathfieldElement.keypressSound = null; MathfieldElement.plonkSound = null;
+  }
+});
+// --- mode silencieux (en cours, en bibliothèque…) : ni voix ni micro, mémorisé par board côté serveur ---
+let silent = false;
+{ const c = document.querySelector("#cover p"); if (c) c.dataset.voice = c.innerHTML; }
+function setSilentUI(on) {
+  silent = on;
+  document.body.classList.toggle("silent", on);
+  $("silentbtn").textContent = on ? "🔇 Silencieux (S)" : "🔊 Voix (S)";
+  $("silentbtn").classList.toggle("on", on);
+  if (on) { if (recording) stopRec(false); vadOff(); release(); $("txt").placeholder = "écris ta question + Entrée (mode silencieux)"; }
+  else { $("txt").placeholder = "ou écris ta question + Entrée"; if (mode === "auto" && micReady && !muted) vadOn(); }
+  const cover = document.querySelector("#cover p");
+  if (cover) cover.innerHTML = on ? "<b>Mode silencieux</b> : pas de voix ni de micro. Tu lis les réponses et tu écris tes questions (espace → champ texte). S pour repasser en mode voix."
+                                  : cover.dataset.voice || cover.innerHTML;
+  micInfo(); show(serverState === "done" ? "listening" : serverState);
+}
+function toggleSilent() { send({t: "silent", on: !silent}); }
+$("silentbtn").onclick = toggleSilent;
 // ouvert depuis l'app Whiteboard : bouton retour à l'accueil, et battement d'activité pour Regulator
 const HUB = new URLSearchParams(location.search).get("hub");
 if (HUB) { $("homebtn").hidden = false; $("homebtn").onclick = () => { location.href = HUB; }; }
 setInterval(() => {
-  const active = playing || recording || calRec || serverState === "thinking" || serverState === "transcribing";
+  // en mode silencieux, le clavier compte déjà pour Regulator : pas de signal « playing »
+  const active = !silent && (playing || recording || calRec || serverState === "thinking" || serverState === "transcribing");
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({t: "activity", active: !!active && !document.hidden}));
 }, 4000);
 $("gear").onclick = () => $("settings").classList.toggle("open");
@@ -780,9 +821,16 @@ document.addEventListener("keydown", e => {
   if (typing) return;
   const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
   if (e.key.toLowerCase() === "r" && plain) { e.preventDefault(); answerOpen ? closeAnswer() : openAnswer(); return; }
+  if (e.key.toLowerCase() === "s" && plain) { e.preventDefault(); toggleSilent(); return; }
   if (e.key.toLowerCase() === "p" && plain) { e.preventDefault(); setPaused(!userPaused); return; }
   if (e.key === "ArrowLeft" && plain) { e.preventDefault(); rewind(); return; }
   if (!micReady) return;
+  if (e.code === "Space" && silent) {          // silencieux : espace mène au champ texte (ou à la ligne de calcul)
+    e.preventDefault();
+    if (answerOpen) { const mf = aLines().map(r => r.querySelector("math-field")).pop(); (mf || $("atext")).focus(); }
+    else $("txt").focus();
+    return;
+  }
   if (e.code === "Space") {
     e.preventDefault(); if (e.repeat || muted) return;
     if (mode === "espace") recording ? stopRec(true) : startRec();

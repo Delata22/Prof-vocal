@@ -514,7 +514,9 @@ class Prof:
         self.brain = Brain(a.slug, a.topic, a.model, a.effort, self.on_brain)
         self.conv = Converter(a.conv_model, a.topic)
         self.gen_text = ""
-        self.cues = []                  # repères en attente d'une phrase
+        self.cues = []
+        self.silent = bool(self.brain.meta.get("silent"))   # mode silencieux, mémorisé par board
+        self.mode_notice = ""                  # repères en attente d'une phrase
         self.started = False
 
     async def send(self, obj):
@@ -536,6 +538,8 @@ class Prof:
         self.t = {"t0": t0 or time.time(), "stt": t_stt or time.time()}
         await self.send({"t": "gen", "gen": self.gen})
         msg = prefix + text
+        if self.mode_notice:            # bascule voix / silencieux depuis le dernier message
+            msg, self.mode_notice = self.mode_notice + "\n" + msg, ""
         if self.interrupted is not None:
             last = self.interrupted.get("last")
             if last:
@@ -774,6 +778,10 @@ class Prof:
                                      "pcm": base64.b64encode(b"\0\0" * 800).decode()})
                 await self.send({"t": "done", "gen": gen})
                 continue
+            if self.silent:                 # mode silencieux : ni synthèse ni son, la page affiche au rythme de lecture
+                self.history.append(("prof", text))
+                await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "cues": cues, "silent": True})
+                continue
             t = time.time()
             pcm, sr = await loop.run_in_executor(None, self.voice.pcm, text)
             if gen != self.gen:
@@ -825,7 +833,8 @@ class Prof:
                 pass
         log("page connectée")
         await self.send({"t": "info", "slug": self.a.slug, "topic": self.a.topic, "model": self.a.model,
-                         "history": self.history[-12:], "voices": self.voice.catalog(), "voice": self.voice.current()})
+                         "history": self.history[-12:], "voices": self.voice.catalog(), "voice": self.voice.current(),
+                         "silent": self.silent})
         next_sr = 16000          # taux du prochain segment binaire (annoncé par {t: audio, sr})
         next_hdr = {}            # en-tête complet ({target: "answer", last: ...} pour le panneau « Ta réponse »)
         await self.state("listening")
@@ -912,6 +921,18 @@ class Prof:
                         await self.on_brain("text", self.gen, txt[k:k + n])
                         await asyncio.sleep(0.02)
                     await self.on_brain("result", self.gen, {"subtype": "success"})
+                elif j["t"] == "silent":
+                    on = bool(j.get("on"))
+                    if on != self.silent:
+                        self.silent = on
+                        self.brain.meta["silent"] = on
+                        self.brain.meta_f.write_text(json.dumps(self.brain.meta))
+                        # le prof l'apprend avec le prochain message de l'élève (pas de tour pour rien)
+                        self.mode_notice = ("[Mode silencieux : l'élève lit tes réponses à l'écran et écrit au clavier ; "
+                                            "il ne parle pas et n'entend rien. Encore plus court, tout au tableau.]" if on else
+                                            "[Mode voix : l'élève t'entend de nouveau et peut parler.]")
+                        log("mode silencieux" if on else "mode voix")
+                    await self.send({"t": "silent", "on": self.silent})
                 elif j["t"] == "cue":            # la page commence à JOUER une phrase : on exécute ses repères
                     log(f"phrase {j.get('idx')} jouée par la page, repères : {j.get('cues')}")
                     asyncio.create_task(self.run_cues(j.get("cues", []), j.get("idx")))
