@@ -143,6 +143,9 @@ function playNext() {
   markCur(it);
   src.onended = () => { if (cur && cur.src === src) { playing = false; cur.el && cur.el.classList.remove("cur"); cur = null; playNext(); } };
   src.start();
+  // repères du prof (⟦mark …⟧) : exécutés quand la phrase commence à être jouée — à chaque fois, donc aussi
+  // quand on la réécoute ; une phrase jamais jouée (interruption) n'exécute rien
+  if (it.cues && it.cues.length) { send({t: "cue", cues: it.cues, idx: it.idx}); dbg("phrase jouée + repères", it.idx, it.cues); }
   show("speaking");
   if (tSpeechEnd !== null && it.idx === 0) {
     const ms = performance.now() - tSpeechEnd + vadWait;
@@ -269,8 +272,8 @@ function connect() {
       addLine("u", m.text); pLine = null;
     } else if (m.t === "say") {
       if (m.gen !== gen) return;
-      const el = proseSpan(m.text);
-      queue.push({gen: m.gen, idx: m.idx, text: m.text, el, buf: pcmBuffer(m.pcm, m.sr)});
+      const el = m.text ? proseSpan(m.text) : null;
+      queue.push({gen: m.gen, idx: m.idx, text: m.text, el, cues: m.cues || [], buf: pcmBuffer(m.pcm, m.sr)});
       playNext();
     } else if (m.t === "tool") {
       addLine("tool", m.text); pLine = null;

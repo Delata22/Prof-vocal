@@ -68,7 +68,8 @@ def parse_vocab(txt):
 
 
 def log(*a):
-    print(time.strftime("%H:%M:%S"), *a, flush=True)
+    t = time.time()
+    print(time.strftime("%H:%M:%S", time.localtime(t)) + f".{int(t * 1000) % 1000:03d}", *a, flush=True)
 
 
 # ---------------- oreilles : Whisper ----------------
@@ -203,7 +204,8 @@ SPEAKABLE = [
     (re.compile(r"\$[^$]*\$"), " "),
     (re.compile(r"`[^`]*`"), " "),
     (re.compile(r"https?://\S+"), " "),
-    (re.compile(r"\[\[[^\]]*\]\]"), " "),        # marqueurs pour la page ([[réponse]])
+    (re.compile(r"\[\[[^\]]*\]\]"), " "),
+    (re.compile(r"⟦[^⟧]*⟧?"), " "),                   # repère inline (ou coupé en fin de tour)        # marqueurs pour la page ([[réponse]])
     (re.compile(r"[*_#>|`~]+"), " "),
     (re.compile(r"^\s*[-•]\s+", re.M), ""),
     (re.compile(r"\s+"), " "),
@@ -220,6 +222,16 @@ ANSWER_MARK = re.compile(r"\[\[\s*r[ée]ponse\s*\]\]", re.I)
 SENT_END = re.compile(r"[.!?…]+[»\"')]*\s+|\n+")
 
 
+CUE = re.compile(r"⟦([^⟧]*)⟧")
+CUE_CMDS = {"mark", "focus", "duo", "show", "pin", "unpin", "step", "play", "replay", "layout"}
+
+
+def take_cues(raw):
+    """Repères inline ⟦mark 3.19 --ligne 2⟧ : renvoie (texte sans repères, [commandes])."""
+    cues = [c.strip() for c in CUE.findall(raw) if c.strip()]
+    return CUE.sub(" ", raw), cues
+
+
 def cut_sentences(buf, flush=False):
     """Renvoie (phrases complètes, reste)."""
     out = []
@@ -227,6 +239,15 @@ def cut_sentences(buf, flush=False):
         m = SENT_END.search(buf)
         if not m:
             break
+        # ne coupe pas un repère ⟦…⟧ en deux (il peut arriver en plusieurs morceaux pendant le streaming)
+        if buf[:m.end()].count("⟦") > buf[:m.end()].count("⟧"):
+            close = buf.find("⟧", m.end())
+            if close < 0:
+                break
+            m2 = SENT_END.search(buf, close + 1)
+            if not m2:
+                break
+            m = m2
         # ne coupe pas une formule $...$ en deux
         if buf[:m.end()].count("$") % 2:
             nxt = buf.find("$", m.end())
@@ -493,6 +514,7 @@ class Prof:
         self.brain = Brain(a.slug, a.topic, a.model, a.effort, self.on_brain)
         self.conv = Converter(a.conv_model, a.topic)
         self.gen_text = ""
+        self.cues = []                  # repères en attente d'une phrase
         self.started = False
 
     async def send(self, obj):
@@ -510,7 +532,7 @@ class Prof:
         if self.brain.busy:
             await self.brain.interrupt()
         self.gen += 1
-        self.buf, self.idx, self.gen_text = "", 0, ""
+        self.buf, self.idx, self.gen_text, self.cues = "", 0, "", []
         self.t = {"t0": t0 or time.time(), "stt": t_stt or time.time()}
         await self.send({"t": "gen", "gen": self.gen})
         msg = text
@@ -535,6 +557,23 @@ class Prof:
             await self.question(f"[Séance : début du cours sur « {self.a.topic} ».{board} Salue-le en une phrase, "
                                 "puis demande-lui en une question ce qu'il sait déjà ou par où il veut commencer.]")
             self.history.pop()
+
+    async def run_cues(self, cues, idx=None):
+        """Exécute les repères d'une phrase au moment où elle est jouée (liste blanche de commandes du cahier)."""
+        import shlex
+        for c in cues:
+            try:
+                parts = shlex.split(c)
+            except ValueError:
+                parts = c.split()
+            if not parts or parts[0] not in CUE_CMDS:
+                log(f"repère refusé : {c!r}")
+                continue
+            t = time.time()
+            p = await asyncio.create_subprocess_exec("python3", str(CAHIER), parts[0], self.a.slug, *parts[1:],
+                                                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out = (await p.communicate())[0].decode(errors="replace").strip().splitlines()
+            log(f"repère exécuté (phrase {idx}) : {c}  [{time.time() - t:.2f} s] {out[-1] if out else ''}")
 
     def write_activity(self, active):
         """Regulator compte le temps d'une app de travail au premier plan ; quand on parle et écoute sans taper,
@@ -689,23 +728,32 @@ class Prof:
             sents, self.buf = cut_sentences(self.buf, flush=True)
             for s in sents:
                 await self.queue_say(gen, s)
-            await self.ttsq.put((gen, None, None))
+            await self.ttsq.put((gen, None, None, self.cues))
+            self.cues = []
             if data.get("subtype") not in ("success", None):
                 log("fin de tour :", data.get("subtype"))
 
     async def queue_say(self, gen, raw):
+        # repères ⟦…⟧ : retirés du texte parlé et affiché, rattachés à cette phrase ; une phrase sans texte
+        # (repère seul) les passe à la phrase suivante, ou à un « silence » en fin de tour
+        raw, cues = take_cues(raw)
+        self.cues += cues
         text = speakable(raw)
         if text and re.search(r"\w", text):
-            await self.ttsq.put((gen, self.idx, text))
+            await self.ttsq.put((gen, self.idx, text, self.cues))
+            self.cues = []
             self.idx += 1
 
     async def tts_worker(self):
         loop = asyncio.get_running_loop()
         while True:
-            gen, idx, text = await self.ttsq.get()
+            gen, idx, text, cues = await self.ttsq.get()
             if gen != self.gen:
                 continue
             if idx is None:
+                if cues:                    # repères restés sans phrase après eux : un silence qui les porte
+                    await self.send({"t": "say", "gen": gen, "idx": -1, "text": "", "sr": 16000, "cues": cues,
+                                     "pcm": base64.b64encode(b"\0\0" * 800).decode()})
                 await self.send({"t": "done", "gen": gen})
                 continue
             t = time.time()
@@ -719,7 +767,7 @@ class Prof:
                     f"{tt.get('first_text', 0) - tt['stt']:.2f} s | 1re phrase synthétisée "
                     f"{tt['first_audio'] - tt['t0']:.2f} s après réception (piper {time.time() - t:.2f} s)")
             self.history.append(("prof", text))
-            await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "sr": sr,
+            await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "sr": sr, "cues": cues,
                              "pcm": base64.b64encode(pcm).decode()})
 
     def keep_audio(self, audio, text, raw=None, sr=16000):
@@ -833,6 +881,20 @@ class Prof:
                 elif j["t"] == "headset":
                     ok, out = await self.headset(j.get("mode", "status"))
                     await self.send({"t": "headset", "ok": ok, "out": out})
+                elif j["t"] == "fake_turn" and os.environ.get("PROF_TEST") == "1":
+                    # test : un tour du prof simulé, découpé en petits morceaux comme le streaming de Claude
+                    self.gen += 1
+                    self.buf, self.idx, self.gen_text, self.cues = "", 0, "", []
+                    self.t = {"t0": time.time(), "stt": time.time()}
+                    await self.send({"t": "gen", "gen": self.gen})
+                    txt, n = j["text"], int(j.get("chunk", 7))
+                    for k in range(0, len(txt), n):
+                        await self.on_brain("text", self.gen, txt[k:k + n])
+                        await asyncio.sleep(0.02)
+                    await self.on_brain("result", self.gen, {"subtype": "success"})
+                elif j["t"] == "cue":            # la page commence à JOUER une phrase : on exécute ses repères
+                    log(f"phrase {j.get('idx')} jouée par la page, repères : {j.get('cues')}")
+                    asyncio.create_task(self.run_cues(j.get("cues", []), j.get("idx")))
                 elif j["t"] == "miclat":         # délai entre l'appui sur espace et le 1er son du micro
                     log(f"micro prêt en {j.get('ms')} ms ({j.get('mic', '')})")
                 elif j["t"] == "activity":       # battement de la page (toutes les 4 s) : signal pour Regulator
