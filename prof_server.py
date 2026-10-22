@@ -534,6 +534,21 @@ class Prof:
                                 "puis demande-lui en une question ce qu'il sait déjà ou par où il veut commencer.]")
             self.history.pop()
 
+    def write_activity(self, active):
+        """Regulator compte le temps d'une app de travail au premier plan ; quand on parle et écoute sans taper,
+        ce fichier (frais de moins de 15 s, playing=true) lui dit que la séance est active.
+        Seulement si l'app Whiteboard l'a demandé (variable PROF_ACTIVITY)."""
+        path = os.environ.get("PROF_ACTIVITY")
+        if not path:
+            return
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            tmp = Path(path).with_suffix(".tmp")
+            tmp.write_text(json.dumps({"app": "whiteboard", "playing": active, "ts": time.time()}))
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
     # --- calibration du micro (banc d'essai de la reconnaissance vocale : bench_asr.py) ---
     async def calib(self, raw, sr, hdr):
         """Garde l'enregistrement brut (taux natif) + la phrase lue, et renvoie ce que Whisper a compris."""
@@ -794,6 +809,8 @@ class Prof:
                 elif j["t"] == "sample":
                     pcm, sr = await loop.run_in_executor(None, self.voice.pcm, self.voice.SAMPLE)
                     await self.send({"t": "sample", "sr": sr, "pcm": base64.b64encode(pcm).decode()})
+                elif j["t"] == "activity":       # battement de la page (toutes les 4 s) : signal pour Regulator
+                    self.write_activity(bool(j.get("active")))
                 elif j["t"] == "latency":
                     line = (f"{time.strftime('%F %T')} model={self.a.model} fin_parole->1er_son="
                             f"{j['ms'] / 1000:.2f}s (dont attente fin VAD {j.get('vad_ms', 0) / 1000:.2f}s)")
@@ -802,6 +819,7 @@ class Prof:
                         f.write(line + "\n")
         if self.ws is ws:
             self.ws = None
+            self.write_activity(False)
         log("page déconnectée")
         return ws
 

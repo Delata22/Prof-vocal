@@ -75,7 +75,8 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <button id="mute" title="Couper / rouvrir le micro">Micro : ouvert</button>
     <input id="txt" placeholder="ou écris ta question + Entrée">
     <div style="display:flex;gap:6px"><button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
-    <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button></div>
+    <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button>
+    <button id="homebtn" title="Revenir à la liste des boards (Ctrl+H)" hidden>⌂ Boards</button></div>
     <div style="display:flex;gap:6px"><button id="rew" title="Flèche gauche : reprendre la phrase ; 2 appuis rapides : la précédente">⏮ Phrase</button>
     <button id="pause" title="Touche P">⏸ Pause</button>
     <button id="answerbtn" title="Touche R">✎ Ta réponse (R)</button></div>
@@ -638,6 +639,13 @@ function playSample(m) {
 }
 $("pause").onclick = () => setPaused(!userPaused);
 $("rew").onclick = rewind;
+// ouvert depuis l'app Whiteboard : bouton retour à l'accueil, et battement d'activité pour Regulator
+const HUB = new URLSearchParams(location.search).get("hub");
+if (HUB) { $("homebtn").hidden = false; $("homebtn").onclick = () => { location.href = HUB; }; }
+setInterval(() => {
+  const active = playing || recording || calRec || serverState === "thinking" || serverState === "transcribing";
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({t: "activity", active: !!active && !document.hidden}));
+}, 4000);
 $("gear").onclick = () => $("settings").classList.toggle("open");
 
 $("go").onclick = async () => {

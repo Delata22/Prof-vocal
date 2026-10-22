@@ -103,7 +103,7 @@ def voxtral_system():
     model = VoxtralForConditionalGeneration.from_pretrained(rid, torch_dtype=torch.bfloat16, device_map="cuda")
 
     def run(it):
-        inputs = proc.apply_transcription_request(language="fr", audio=it["audio"], sampling_rate=16000, model_id=rid)
+        inputs = proc.apply_transcription_request(language="fr", audio=it["audio"], format="wav", sampling_rate=16000, model_id=rid)
         inputs = inputs.to("cuda", dtype=torch.bfloat16)
         out = model.generate(**inputs, max_new_tokens=200)
         return proc.batch_decode(out[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)[0].strip()
