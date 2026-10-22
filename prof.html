@@ -49,6 +49,11 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #answer .why,#atext{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}
 #answer .afoot{display:flex;gap:8px;align-items:center} #atext{flex:1}
 button.primary{background:var(--acc);color:#fff;border:0}
+#calib{display:none;position:fixed;inset:12% 14% auto 14%;background:var(--card);border:2px solid var(--red);border-radius:14px;padding:16px 22px;z-index:11;flex-direction:column;gap:6px;box-shadow:0 8px 32px rgba(0,0,0,.35)}
+#calib.open{display:flex} #calib .chead{display:flex;gap:10px;align-items:baseline} #calib .chead span{flex:1;color:var(--muted);font-size:13px}
+#calib .cref{font-size:28px;line-height:1.35;margin:10px 0;font-weight:500} #calib .cpass{color:var(--acc);margin:0}
+#calib .chint{color:var(--muted);margin:0} #calib .cheard{color:var(--muted);font-style:italic;min-height:1.5em;margin:0}
+#calib.rec{border-color:var(--red);background:color-mix(in srgb,var(--red) 10%,var(--card))} #calib .cfoot{display:flex;gap:8px;align-items:center} #cprog{margin-left:auto;color:var(--muted)}
 #micinfo{color:var(--muted);font-size:12px;max-width:260px;text-align:right}
 #settings{display:none;position:fixed;right:14px;bottom:calc(30vh + 8px);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;z-index:8;flex-direction:column;gap:10px;width:340px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 #settings.open{display:flex} #settings label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted)}
@@ -88,12 +93,21 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <input id="atext" placeholder="ou tape la ligne en français + Entrée">
     <button id="asend" class="primary">Envoyer au prof</button></div>
 </div>
+<div id="calib">
+  <div class="chead"><b>Calibrer le micro</b> <span id="cinfo"></span><button id="cclose" title="Échap">×</button></div>
+  <p class="cpass" id="cpass"></p>
+  <p class="cref" id="cref"></p>
+  <p class="chint" id="chint">Espace : je commence à lire · Espace : j'ai fini. Lis naturellement, comme en cours.</p>
+  <p class="cheard" id="cheard"></p>
+  <div class="cfoot"><button id="credo">↺ Refaire cette phrase</button><button id="cskip">Passer</button><span id="cprog"></span></div>
+</div>
 <div id="settings">
   <label>Micro <select id="micsel"><option>(après « Démarrer »)</option></select></label>
   <label class="row"><input type="checkbox" id="filters" checked> filtres du navigateur (écho, bruit, gain)</label>
   <label>Voix <select id="voicesel"></select></label>
   <label>Vitesse <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1"> <span id="speedv">× 1.00</span></label>
   <button id="sample">Écouter un exemple</button>
+  <button id="calibbtn" title="Lire 12 phrases (avec puis sans filtres) pour mesurer la reconnaissance vocale">🎙 Calibrer le micro</button>
 </div>
 <div id="cover"><button class="big" id="go">Démarrer le cours</button>
   <p>Un clic est nécessaire pour autoriser le micro et le son.<br><b>Espace</b> : un appui = j'enregistre (et le prof se tait), un 2e appui = j'envoie. Échap annule.<br>Le mode « auto » détecte seul la fin de tes phrases (moins fiable avec du bruit).</p></div>
@@ -311,7 +325,7 @@ async function startRecorder() {
   const sink = rec.createGain(); sink.gain.value = 0;
   capNode.port.onmessage = e => {
     const x = e.data;
-    if (recording) chunks.push(x);
+    if (recording || calRec) chunks.push(x);
     if (mode === "espace") {
       let r = 0; for (let i = 0; i < x.length; i++) r += x[i] * x[i];
       $("meter").firstChild.style.width = Math.min(100, Math.round(Math.sqrt(r / x.length) * 600)) + "%";
@@ -524,6 +538,81 @@ $("micsel").onchange = async () => { setPref("prof-mic", $("micsel").value); awa
 $("filters").onchange = async () => { setPref("prof-filters", $("filters").checked ? "1" : "0"); await openMic($("micsel").value || pref("prof-mic", "")); await setMode(mode); };
 $("filters").checked = pref("prof-filters", "1") === "1";
 
+// --- calibration du micro : l'utilisateur lit des phrases de référence ; le brut (taux natif) + la vérité
+// partent au serveur (calib/<run>/), pour le banc d'essai bench_asr.py. Deux passes : avec puis sans filtres.
+const CALIB = [
+  ["Le descripteur SIFT résume le voisinage d'un point clé en un vecteur de cent vingt-huit nombres.", 0],
+  ["On construit une pyramide de gaussiennes, octave par octave.", 0],
+  ["La différence de gaussiennes, ou DoG, approche le laplacien normalisé.", 0],
+  ["Chaque octave divise la résolution de l'image par deux.", 0],
+  ["On garde les extrema locaux en espace et en échelle.", 0],
+  ["L'orientation dominante vient de l'histogramme des gradients autour du point.", 0],
+  ["Enchaîner deux flous gaussiens additionne leurs variances.", 0],
+  ["Pour apparier deux images, on compare les descripteurs avec le test du ratio de Lowe.", 0],
+  ["Soit n un entier.", 1],
+  ["D de quatre égale moins un virgule douze.", 1],
+  ["Sigma deux égale racine de deux fois sigma un.", 1],
+  ["Pour tout x réel, f de x est positif.", 1],
+];
+let calOpen = false, calRec = false, calK = 0, calRun = "", calFilters0 = true;
+function calStep() { return {pass: Math.floor(calK / CALIB.length), i: calK % CALIB.length}; }
+function calShow() {
+  const {pass, i} = calStep();
+  if (pass >= 2) {
+    $("cpass").textContent = "Terminé, merci ! Les enregistrements sont dans calib/" + calRun + ".";
+    $("cref").textContent = "Tu peux recommencer avec un autre micro (⚙ Réglages), ou fermer.";
+    $("chint").textContent = ""; $("cprog").textContent = `${2 * CALIB.length}/${2 * CALIB.length}`; return;
+  }
+  $("cpass").textContent = pass === 0 ? "Passe 1/2 : avec les filtres du navigateur (écho, bruit, gain)" : "Passe 2/2 : sans les filtres (son brut)";
+  $("cref").textContent = CALIB[i][0];
+  $("chint").textContent = "Espace : je commence à lire · Espace : j'ai fini. Lis naturellement, comme en cours.";
+  $("cprog").textContent = `${calK + 1}/${2 * CALIB.length}`;
+  $("cinfo").textContent = micLabel();
+}
+async function calSetFilters(on) {
+  if ($("filters").checked === on) return;
+  $("filters").checked = on;
+  await openMic($("micsel").value || pref("prof-mic", "")); await setMode(mode);
+}
+async function openCalib() {
+  if (!stream) { showErr("démarre d'abord le cours (micro)"); return; }
+  if (recording) stopRec(false);
+  stopAll(false); setPaused(false);
+  calOpen = true; calK = 0; calFilters0 = $("filters").checked;
+  calRun = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-") + "_" + (micLabel() || "micro").replace(/\W+/g, "_").slice(0, 30);
+  $("settings").classList.remove("open"); $("calib").classList.add("open"); $("cheard").textContent = "";
+  await calSetFilters(true); calShow();
+}
+async function closeCalib() {
+  if (calRec) { calRec = false; chunks = []; }
+  calOpen = false; $("calib").classList.remove("open", "rec");
+  await calSetFilters(calFilters0);
+}
+function calToggle() {
+  const {pass, i} = calStep(); if (pass >= 2) return;
+  if (!calRec) {
+    if (rec.state !== "running") rec.resume();
+    chunks = []; calRec = true; $("calib").classList.add("rec"); $("chint").textContent = "● j'enregistre… espace quand tu as fini";
+    return;
+  }
+  setTimeout(async () => {                       // 300 ms de marge : la fin de la dernière syllabe
+    calRec = false; $("calib").classList.remove("rec");
+    const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
+    let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; } chunks = [];
+    ws.send(JSON.stringify({t: "audio", sr: rec.sampleRate, mic: micLabel(), target: "calib", run: calRun,
+                            idx: i, ref: CALIB[i][0], maths: !!CALIB[i][1], filters: $("filters").checked}));
+    ws.send(f.buffer);
+    $("cheard").textContent = "…";
+    calK++;
+    if (calK === CALIB.length) await calSetFilters(false);
+    calShow();
+  }, 300);
+}
+$("calibbtn").onclick = openCalib;
+$("cclose").onclick = closeCalib;
+$("cskip").onclick = () => { if (!calRec) { calK++; if (calK === CALIB.length) calSetFilters(false); calShow(); } };
+$("credo").onclick = () => { if (!calRec && calK > 0) { calK--; if (calK === CALIB.length - 1) calSetFilters(true); calShow(); } };
+
 // --- choix de la voix ---
 let voices = [];
 function fillVoices(list, cur) {
@@ -571,6 +660,11 @@ $("mute").onclick = () => {
 };
 document.addEventListener("keydown", e => {
   const typing = ["INPUT", "TEXTAREA", "MATH-FIELD", "SELECT"].includes(e.target.tagName);
+  if (calOpen) {                                   // calibration : espace = lire / fini, Échap = fermer
+    if (e.code === "Space" && !typing) { e.preventDefault(); if (!e.repeat) calToggle(); }
+    else if (e.code === "Escape") closeCalib();
+    return;
+  }
   if (answerOpen && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAnswer(); return; }
   if (e.code === "Escape" && !recording && answerOpen) { closeAnswer(); return; }
   if (typing) return;

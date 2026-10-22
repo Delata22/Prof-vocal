@@ -4,3 +4,4 @@ aiohttp
 soxr
 nvidia-cublas-cu12
 nvidia-cudnn-cu12==9.*
+num2words

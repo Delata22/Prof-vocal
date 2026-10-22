@@ -3,3 +3,4 @@ __pycache__/
 sessions/
 latency.log
 voice.json
+calib/

@@ -74,9 +74,10 @@ def log(*a):
 class Ears:
     HALLU = re.compile(r"sous-titr|merci d'avoir regard|abonnez-vous|amara\.org", re.I)
 
-    def __init__(self, model, compute, topic, slug):
+    def __init__(self, model, compute, topic, slug, beam=5):
         from faster_whisper import WhisperModel
         t = time.time()
+        self.beam = beam
         self.m = WhisperModel(model, device="cuda", compute_type=compute)
         self.topic = topic
         # vocabulaire : commun (vocab.txt du projet) + propre au cours (sessions/<slug>/vocab.txt)
@@ -92,7 +93,7 @@ class Ears:
                     seen.add(w.lower()); out.append(w)
         return out
 
-    def transcribe(self, audio, maths=False):
+    def prompt_for(self, maths=False):
         words = self.words()
         # initial_prompt : le contexte (Whisper imite le style et l'orthographe du prompt) ;
         # hotwords : les termes techniques à favoriser.
@@ -104,14 +105,19 @@ class Ears:
         if maths:   # dictée d'une ligne de calcul : un prompt de calcul, sinon Whisper recopie la phrase de cours
             prompt = ("Soit n un entier. Soit x un réel. Pour tout i, f de x égale n plus 1. "
                       "D de 4 égale un seizième fois moins deux fois neuf, égale moins 1.12. Sigma 2 égale racine de 2 fois sigma 1.")
-        segs, _ = self.m.transcribe(audio, language="fr", beam_size=5, vad_filter=False,
+        return prompt
+
+    def transcribe(self, audio, maths=False, use_prompt=True, beam=None):
+        """use_prompt / beam : variantes pour le banc d'essai (bench_asr.py)."""
+        prompt = self.prompt_for(maths) if use_prompt else None
+        segs, _ = self.m.transcribe(audio, language="fr", beam_size=beam or self.beam, vad_filter=False,
                                     condition_on_previous_text=False, initial_prompt=prompt)
         segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
         txt = " ".join(s.text.strip() for s in segs).strip()
         # Whisper recopie le prompt sur un son trop court ; mais une vraie phrase peut ressembler à un bout
         # du prompt (« soit n un entier ») : on ne rejette qu'une copie d'au moins la moitié du prompt.
         t = txt.lower().strip(" .")
-        copie = t in prompt.lower() and len(t) > 0.5 * len(prompt)
+        copie = bool(prompt) and t in prompt.lower() and len(t) > 0.5 * len(prompt)
         return "" if self.HALLU.search(txt) or self.garbage(txt) or copie else txt
 
     @staticmethod
@@ -480,7 +486,7 @@ class Prof:
         self.interrupted = None      # {"last": str} si l'élève vient de couper
         self.t = {}                  # chronos de la génération courante
         self.history = []            # [(qui, texte)]
-        self.ears = Ears(a.whisper, a.compute, a.topic, a.slug)
+        self.ears = Ears(a.whisper, a.compute, a.topic, a.slug, a.beam)
         self.voice = Voice()
         self.brain = Brain(a.slug, a.topic, a.model, a.effort, self.on_brain)
         self.conv = Converter(a.conv_model, a.topic)
@@ -527,6 +533,27 @@ class Prof:
             await self.question(f"[Séance : début du cours sur « {self.a.topic} ».{board} Salue-le en une phrase, "
                                 "puis demande-lui en une question ce qu'il sait déjà ou par où il veut commencer.]")
             self.history.pop()
+
+    # --- calibration du micro (banc d'essai de la reconnaissance vocale : bench_asr.py) ---
+    async def calib(self, raw, sr, hdr):
+        """Garde l'enregistrement brut (taux natif) + la phrase lue, et renvoie ce que Whisper a compris."""
+        import wave
+        run = re.sub(r"[^\w.-]+", "_", hdr.get("run", "run"))[:80]
+        d = HERE / "calib" / run
+        d.mkdir(parents=True, exist_ok=True)
+        name = f"{int(hdr.get('idx', 0)):02d}-{'filtres' if hdr.get('filters') else 'brut'}"
+        with wave.open(str(d / f"{name}.wav"), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+            w.writeframes((np.clip(raw, -1, 1) * 32767).astype(np.int16).tobytes())
+        meta = {"file": f"{name}.wav", "sr": sr, "ref": hdr.get("ref", ""), "idx": hdr.get("idx"),
+                "maths": bool(hdr.get("maths")), "filters": bool(hdr.get("filters")), "mic": hdr.get("mic", ""),
+                "ts": time.time()}
+        with open(d / "meta.jsonl", "a") as f:
+            f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+        audio = raw if sr == 16000 else soxr.resample(raw, sr, 16000, quality="HQ").astype(np.float32)
+        text = await asyncio.get_running_loop().run_in_executor(None, self.ears.transcribe, audio, meta["maths"])
+        log(f"calibration {run}/{name} : {text!r}  (lu : {meta['ref']!r})")
+        await self.send({"t": "calib_ok", "idx": meta["idx"], "filters": meta["filters"], "text": text})
 
     # --- panneau « Ta réponse » ---
     async def partial(self, raw, sr):
@@ -709,6 +736,9 @@ class Prof:
                 if hdr.get("target") == "partial":    # aperçu en direct d'une ligne de calcul en cours de dictée
                     asyncio.create_task(self.partial(raw, sr))
                     continue
+                if hdr.get("target") == "calib":      # calibration du micro : jamais envoyé au prof
+                    asyncio.create_task(self.calib(raw, sr, hdr))
+                    continue
                 # la page envoie au taux natif du micro (souvent 48 kHz) : rééchantillonnage propre ici
                 audio = raw if sr == 16000 else soxr.resample(raw, sr, 16000, quality="HQ").astype(np.float32)
                 rms = float(np.sqrt(np.mean(raw ** 2))) if len(raw) else 0.0
@@ -783,8 +813,10 @@ async def main():
     ap.add_argument("--port", type=int, default=8778)
     ap.add_argument("--model", default=os.environ.get("PROF_MODEL", "claude-opus-5-5"))
     ap.add_argument("--effort", default=os.environ.get("PROF_EFFORT", "low"))
-    ap.add_argument("--whisper", default="large-v3-turbo")
-    ap.add_argument("--compute", default="int8_float16")
+    # réglages de la reconnaissance vocale : voir bench_asr.py (mesure du WER sur les enregistrements de calibration)
+    ap.add_argument("--whisper", default=os.environ.get("PROF_WHISPER", "large-v3-turbo"))
+    ap.add_argument("--compute", default=os.environ.get("PROF_WHISPER_COMPUTE", "int8_float16"))
+    ap.add_argument("--beam", type=int, default=int(os.environ.get("PROF_WHISPER_BEAM", "5")))
     ap.add_argument("--conv-model", default=os.environ.get("PROF_CONV_MODEL", "claude-haiku-5-5"))
     a = ap.parse_args()
 
