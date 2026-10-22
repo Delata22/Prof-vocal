@@ -112,7 +112,7 @@ class Prof:
         if self.proc and self.proc.poll() is None:
             try:
                 os.killpg(self.proc.pid, signal.SIGTERM)    # le serveur et ses `claude`
-                self.proc.wait(timeout=8)
+                self.proc.wait(timeout=15)       # le Prof remet le casque en musique (~4 s)
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 try:
                     os.killpg(self.proc.pid, signal.SIGKILL)

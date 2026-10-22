@@ -27,6 +27,8 @@ CAHIER = Path.home() / ".claude/cahier/cahier.py"
 VOICE = Path.home() / ".claude/cahier/voices/fr_FR-siwis-medium.onnx"
 SESS = HERE / "sessions"
 LOG = HERE / "latency.log"
+CASQUE = Path.home() / ".local/bin/casque-mode"        # bascule A2DP / HFP du casque Bluetooth (géré ailleurs)
+CASQUE_MARK = Path.home() / ".local/state/whiteboard/casque-appel-par-prof"   # c'est nous qui l'avons mis en appel
 LEXIQUE = Path.home() / ".claude/cahier/prononciation.json"   # partagé avec le cahier (cahier.py prononce)
 
 
@@ -549,6 +551,25 @@ class Prof:
         except OSError:
             pass
 
+    async def headset(self, mode):
+        """casque-mode appel|musique|status : une sortie d'une ligne, code 0 même en cas d'échec (lire le texte).
+        Jamais en boucle ni de relance : les bascules rapides répétées coincent ce casque."""
+        if not CASQUE.exists():
+            return False, "casque-mode absent"
+        p = await asyncio.create_subprocess_exec(str(CASQUE), mode, stdout=asyncio.subprocess.PIPE,
+                                                 stderr=asyncio.subprocess.STDOUT)
+        try:
+            out = (await asyncio.wait_for(p.communicate(), 20))[0].decode(errors="replace").strip()
+        except asyncio.TimeoutError:
+            p.kill()
+            return False, "casque-mode ne répond pas"
+        ok = out.startswith(("Mode appel", "Mode musique", "Déjà en mode")) or mode == "status"
+        if mode == "appel" and out.startswith("Mode appel"):     # on l'a basculé : on le remettra en musique à la fin
+            CASQUE_MARK.parent.mkdir(parents=True, exist_ok=True)
+            CASQUE_MARK.write_text(str(time.time()))
+        log(f"casque-mode {mode} : {out}")
+        return ok, out
+
     # --- calibration du micro (banc d'essai de la reconnaissance vocale : bench_asr.py) ---
     async def calib(self, raw, sr, hdr):
         """Garde l'enregistrement brut (taux natif) + la phrase lue, et renvoie ce que Whisper a compris."""
@@ -809,6 +830,9 @@ class Prof:
                 elif j["t"] == "sample":
                     pcm, sr = await loop.run_in_executor(None, self.voice.pcm, self.voice.SAMPLE)
                     await self.send({"t": "sample", "sr": sr, "pcm": base64.b64encode(pcm).decode()})
+                elif j["t"] == "headset":
+                    ok, out = await self.headset(j.get("mode", "status"))
+                    await self.send({"t": "headset", "ok": ok, "out": out})
                 elif j["t"] == "activity":       # battement de la page (toutes les 4 s) : signal pour Regulator
                     self.write_activity(bool(j.get("active")))
                 elif j["t"] == "latency":
@@ -856,8 +880,27 @@ async def main():
     await asyncio.Event().wait()
 
 
+def casque_musique_si_besoin():
+    """Fin de séance : remet le casque en musique, une seule fois, et seulement si le Prof l'avait mis en appel."""
+    if CASQUE_MARK.exists() and CASQUE.exists():
+        CASQUE_MARK.unlink(missing_ok=True)
+        import subprocess
+        try:
+            out = subprocess.run([str(CASQUE), "musique"], capture_output=True, text=True, timeout=20).stdout.strip()
+            log("casque-mode musique :", out)
+        except Exception as e:
+            log("casque-mode musique :", e)
+
+
 if __name__ == "__main__":
+    import signal
+
+    def _term(*_):                      # arrêt par Whiteboard : même sortie propre que Ctrl-C
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _term)
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    finally:
+        casque_musique_si_besoin()

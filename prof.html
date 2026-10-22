@@ -105,6 +105,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
 <div id="settings">
   <label>Micro <select id="micsel"><option>(après « Démarrer »)</option></select></label>
   <label class="row"><input type="checkbox" id="filters" checked> filtres du navigateur (écho, bruit, gain)</label>
+  <label class="row"><input type="checkbox" id="headset"> casque Bluetooth : mode appel pendant la séance (micro du casque)</label>
   <label>Voix <select id="voicesel"></select></label>
   <label>Vitesse <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1"> <span id="speedv">× 1.00</span></label>
   <button id="sample">Écouter un exemple</button>
@@ -243,6 +244,7 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.t === "replaced") { replaced = true; replacedCover(); return; }
     if (m.t === "voice") { fillVoices(null, m.voice); return; }
+    if (m.t === "headset") { if (headsetWait) { headsetWait(m); headsetWait = null; } return; }
     if (m.t === "ans") { liveHide(); onAns(m); return; }
     if (m.t === "partial") {
       if (!m.latex) partialBusy = false;
@@ -516,7 +518,13 @@ async function openMic(deviceId) {
   const filt = $("filters").checked;
   const audio = {echoCancellation: filt, noiseSuppression: filt, autoGainControl: filt, channelCount: 1};
   if (deviceId) audio.deviceId = {exact: deviceId};
-  const s2 = await navigator.mediaDevices.getUserMedia({audio});
+  let s2;
+  try { s2 = await navigator.mediaDevices.getUserMedia({audio}); }
+  catch (e) {                                          // micro mémorisé absent (casque en mode musique…) : celui par défaut
+    if (!deviceId || !/Overconstrained|NotFound/.test(e.name)) throw e;
+    dbg("micro choisi introuvable, micro par défaut", e.name); delete audio.deviceId;
+    s2 = await navigator.mediaDevices.getUserMedia({audio});
+  }
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = s2;
   const t = stream.getAudioTracks()[0], st = t.getSettings();
@@ -648,8 +656,26 @@ setInterval(() => {
 }, 4000);
 $("gear").onclick = () => $("settings").classList.toggle("open");
 
+// casque Bluetooth : « casque-mode appel » AVANT d'ouvrir le micro (en mode musique, son micro n'existe pas)
+let headsetWait = null;
+function headset(mode) {
+  return new Promise(res => { headsetWait = res; send({t: "headset", mode}); setTimeout(() => res({ok: false, out: "pas de réponse"}), 25000); });
+}
+$("headset").checked = pref("prof-headset", "0") === "1";
+$("headset").onchange = async () => {
+  setPref("prof-headset", $("headset").checked ? "1" : "0");
+  if (!$("headset").checked || !stream) return;
+  const r = await headset("appel"); casqueMsg(r);
+  await new Promise(r => setTimeout(r, 1200)); await openMic(pref("prof-mic", "")); await setMode(mode);
+};
+function casqueMsg(r) { if (!r.ok) showErr("casque : " + r.out); else dbg("casque :", r.out); }
 $("go").onclick = async () => {
   await ctx.resume();
+  if ($("headset").checked) {
+    $("go").textContent = "Casque en mode appel…";
+    const r = await headset("appel"); casqueMsg(r);
+    await new Promise(r => setTimeout(r, 1200));           // la source bluez_input.* met ~1 s à apparaître
+  }
   try {
     await openMic(pref("prof-mic", ""));
     await startRecorder();
