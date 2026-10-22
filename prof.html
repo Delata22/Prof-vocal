@@ -35,6 +35,7 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #txt{font:inherit;font-size:13px;width:220px;padding:4px 8px;border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--fg)}
 #lat{color:var(--muted);font-size:12px}
 #meter{width:120px;height:5px;background:var(--line);border-radius:3px;overflow:hidden}#meter i{display:block;height:100%;width:0;background:var(--listen)}
+#log .u .shows{color:var(--acc);font-weight:400;font-size:13px}
 #log .err{color:var(--red);font-size:13px}
 #answer{display:none;position:fixed;left:14px;right:300px;bottom:calc(30vh + 8px);max-height:55vh;overflow:auto;background:var(--card);border:2px solid var(--acc);border-radius:12px;padding:10px 14px;z-index:7;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 #answer.open{display:flex}
@@ -269,7 +270,8 @@ function connect() {
     } else if (m.t === "gen") {
       gen = m.gen; pLine = null;
     } else if (m.t === "user") {
-      addLine("u", m.text); pLine = null;
+      const d = addLine("u", m.text); pLine = null;
+      if (m.shows) { const sp = document.createElement("span"); sp.className = "shows"; sp.textContent = ` (en montrant : ${m.shows})`; d.append(sp); }
     } else if (m.t === "say") {
       if (m.gen !== gen) return;
       const el = m.text ? proseSpan(m.text) : null;

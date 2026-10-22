@@ -528,25 +528,43 @@ class Prof:
         await self.send({"t": "state", "s": s, "detail": detail})
 
     # --- nouvelle question ---
-    async def question(self, text, t0=None, t_stt=None):
+    async def question(self, text, t0=None, t_stt=None, prefix=""):
         if self.brain.busy:
             await self.brain.interrupt()
         self.gen += 1
         self.buf, self.idx, self.gen_text, self.cues = "", 0, "", []
         self.t = {"t0": t0 or time.time(), "stt": t_stt or time.time()}
         await self.send({"t": "gen", "gen": self.gen})
-        msg = text
+        msg = prefix + text
         if self.interrupted is not None:
             last = self.interrupted.get("last")
             if last:
                 msg = (f"[Interruption : l'élève t'a coupé pendant que tu disais « {last} ». "
-                       f"La suite de ta réponse n'a pas été entendue.]\n{text}")
+                       f"La suite de ta réponse n'a pas été entendue.]\n{msg}")
             else:
-                msg = f"[Interruption : l'élève a repris la parole avant d'entendre ta réponse.]\n{text}"
+                msg = f"[Interruption : l'élève a repris la parole avant d'entendre ta réponse.]\n{msg}"
             self.interrupted = None
         self.history.append(("élève", text))
         await self.state("thinking")
         await self.brain.ask(self.gen, msg)
+
+    async def take_selection(self):
+        """Ce que l'élève montre au tableau (sélection à la souris dans une carte) : (préfixe pour le prof,
+        rappel court pour la page). La sélection est effacée une fois envoyée, pour ne pas coller aux suivantes."""
+        try:
+            sel = json.loads((CAHIER.parent / "sessions" / self.a.slug / "cahier.json").read_text())["state"].get("selection")
+        except (OSError, ValueError, KeyError):
+            return "", None
+        if not sel or not sel.get("id"):
+            return "", None
+        where = f"carte {sel['id']}" + (f", ligne {sel['ligne']}" if sel.get("ligne") else "")
+        what = f"formule {sel['tex']}" if sel.get("tex") else f"« {sel.get('texte', '')} »"
+        p = await asyncio.create_subprocess_exec("python3", str(CAHIER), "selection", self.a.slug, "--clear",
+                                                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        await p.wait()
+        log(f"l'élève montre : {where}, {what}")
+        short = f"{sel['id']}" + (f" ligne {sel['ligne']}" if sel.get("ligne") else "")
+        return f"[L'élève montre au tableau : {where}, {what}]\n", short
 
     async def kickoff(self):
         if self.brain.fresh:
@@ -845,8 +863,9 @@ class Prof:
                         self.interrupted = None
                     continue
                 t_stt = time.time()
-                await self.send({"t": "user", "text": text})
-                await self.question(text, t0, t_stt)
+                prefix, shows = await self.take_selection()
+                await self.send({"t": "user", "text": text, "shows": shows})
+                await self.question(text, t0, t_stt, prefix)
             elif msg.type == WSMsgType.TEXT:
                 j = json.loads(msg.data)
                 if j["t"] == "start" and not self.started:
@@ -865,8 +884,9 @@ class Prof:
                 elif j["t"] == "answer_line":     # ligne tapée en français dans le panneau
                     asyncio.create_task(self.answer_line(j["text"], j.get("last")))
                 elif j["t"] == "text":
-                    await self.send({"t": "user", "text": j["text"]})
-                    await self.question(j["text"])
+                    prefix, shows = await self.take_selection()
+                    await self.send({"t": "user", "text": j["text"], "shows": shows})
+                    await self.question(j["text"], prefix=prefix)
                 elif j["t"] == "audio":
                     next_sr, next_hdr = int(j.get("sr", 16000)), j
                     if j.get("mic"):
