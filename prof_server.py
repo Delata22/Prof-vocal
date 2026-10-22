@@ -833,6 +833,8 @@ class Prof:
                 elif j["t"] == "headset":
                     ok, out = await self.headset(j.get("mode", "status"))
                     await self.send({"t": "headset", "ok": ok, "out": out})
+                elif j["t"] == "miclat":         # délai entre l'appui sur espace et le 1er son du micro
+                    log(f"micro prêt en {j.get('ms')} ms ({j.get('mic', '')})")
                 elif j["t"] == "activity":       # battement de la page (toutes les 4 s) : signal pour Regulator
                     self.write_activity(bool(j.get("active")))
                 elif j["t"] == "latency":

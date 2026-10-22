@@ -116,6 +116,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
 <script>
 const $ = id => document.getElementById(id);
 let ws, gen = 0, mic = null, muted = false, micErr = "";
+let micReady = false, starting = false, recKeyT = 0, firstChunkT = null;   // micro autorisé ; ouverture à la demande
 const LABEL = {paused: "⏸ en pause", recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
 let serverState = "listening";
 
@@ -329,6 +330,13 @@ async function startRecorder() {
   capNode.port.onmessage = e => {
     const x = e.data;
     if (recording || calRec) chunks.push(x);
+    if ((recording || calRec) && firstChunkT === null) {     // 1er son reçu : le micro est vraiment prêt
+      firstChunkT = performance.now();
+      const ms = Math.round(firstChunkT - recKeyT);
+      dbg(`micro prêt ${ms} ms après l'appui`); send({t: "miclat", ms, mic: micLabel()});
+      if (recording) $("sub").textContent = `parle (micro prêt en ${ms} ms)`;
+      else $("chint").textContent = `● j'enregistre (micro prêt en ${ms} ms)… espace quand tu as fini`;
+    }
     if (mode === "espace") {
       let r = 0; for (let i = 0; i < x.length; i++) r += x[i] * x[i];
       $("meter").firstChild.style.width = Math.min(100, Math.round(Math.sqrt(r / x.length) * 600)) + "%";
@@ -338,8 +346,8 @@ async function startRecorder() {
   connectRecorder();
 }
 function connectRecorder() {
-  if (capSrc) capSrc.disconnect();
-  capSrc = rec.createMediaStreamSource(stream); capSrc.connect(capNode);
+  if (capSrc) { capSrc.disconnect(); capSrc = null; }
+  if (stream && rec) { capSrc = rec.createMediaStreamSource(stream); capSrc.connect(capNode); }
 }
 // ---------- aperçu en direct de la ligne dictée ----------
 let liveTimer = null, partialBusy = false, partialT = 0;
@@ -359,10 +367,15 @@ function sendPartial() {
   ws.send(JSON.stringify({t: "audio", sr: rec.sampleRate, target: "partial"}));
   ws.send(f.buffer);
 }
-function startRec() {
-  if (recording) return;
+async function startRec() {
+  if (recording || starting) return;
+  starting = true; recKeyT = performance.now(); firstChunkT = null;
+  show("recording", "ouverture du micro…");
+  try { await acquire(); }
+  catch (e) { starting = false; showErr("micro : " + e.name + " " + e.message); show("listening"); return; }
+  starting = false;
   if (!answerOpen || playing || queue.length) bargeIn();   // dicter une ligne de calcul ne coupe que si le prof parle
-  if (rec.state !== "running") rec.resume();
+  if (rec.state !== "running") await rec.resume();
   recording = true; chunks = []; recT0 = performance.now();
   if (answerOpen) {
     $("apending").textContent = "j'enregistre ta ligne de calcul… (espace pour finir)";
@@ -392,6 +405,7 @@ function stopRec(sendIt, now) {
   const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
   let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
   chunks = [];
+  if (mode === "espace" && !calOpen) release();      // micro fermé dès la fin de l'enregistrement
   if (!sendIt) { dbg("enregistrement annulé"); show("listening"); return; }
   tSpeechEnd = performance.now(); vadWait = 0;
   sendSegment(f, "espace", rec.sampleRate);
@@ -452,8 +466,12 @@ function renderLat() { $("lat").textContent = [$("lat").dataset.l, $("lat").data
 async function setMode(m) {
   mode = m; try { localStorage.setItem("prof-mode", m); } catch (e) {}
   $("mode").textContent = m === "espace" ? "Mode : espace" : "Mode : auto (VAD)";
+  $("mode").title = m === "auto" ? "Mode auto : le micro reste ouvert en permanence (le VAD écoute)"
+                                 : "Mode espace : le micro ne s'ouvre que pendant que tu parles";
   if (recording) stopRec(false);
-  if (mic) { if (m === "auto" && !muted) mic.start(); else await mic.pause(); }
+  if (m === "auto" && micReady && !muted && !document.hidden) await vadOn();
+  else { vadOff(); if (!calRec) release(); }
+  micInfo();
   dbg("mode", m);
   show(serverState === "done" ? "listening" : serverState);
 }
@@ -513,38 +531,79 @@ $("atext").onkeydown = e => {                         // une ligne tapée en fra
 // --- choix du micro ---
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
 const setPref = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
-function micLabel() { const t = stream && stream.getAudioTracks()[0]; return t ? t.label : ""; }
-async function openMic(deviceId) {
-  const filt = $("filters").checked;
+function micLabel() { const t = stream && stream.getAudioTracks()[0]; return t ? t.label : (typeof lastMicLabel === "string" ? lastMicLabel : ""); }
+// Le micro ne reste pas ouvert : en mode espace il s'ouvre à l'appui et se ferme à la fin de l'enregistrement
+// (un casque Bluetooth dont le micro est tenu ouvert passe en « mode appel », son mono dégradé).
+const BT = /bluez|bluetooth|wh-1000|headset|hands-free|handsfree|hfp|airpods|buds/i;
+async function acquire() {
+  const live = stream && stream.getAudioTracks()[0] && stream.getAudioTracks()[0].readyState === "live";
+  if (live) return stream;
+  const deviceId = pref("prof-mic", ""), filt = $("filters").checked;
   const audio = {echoCancellation: filt, noiseSuppression: filt, autoGainControl: filt, channelCount: 1};
   if (deviceId) audio.deviceId = {exact: deviceId};
+  const t0 = performance.now();
   let s2;
   try { s2 = await navigator.mediaDevices.getUserMedia({audio}); }
-  catch (e) {                                          // micro mémorisé absent (casque en mode musique…) : celui par défaut
+  catch (e) {                                          // micro mémorisé absent (casque éteint…) : celui par défaut
     if (!deviceId || !/Overconstrained|NotFound/.test(e.name)) throw e;
     dbg("micro choisi introuvable, micro par défaut", e.name); delete audio.deviceId;
     s2 = await navigator.mediaDevices.getUserMedia({audio});
   }
-  if (stream) stream.getTracks().forEach(t => t.stop());
   stream = s2;
-  const t = stream.getAudioTracks()[0], st = t.getSettings();
-  $("micinfo").textContent = `🎙 ${t.label || "micro"}` + (st.sampleRate ? ` · ${st.sampleRate / 1000} kHz` : "");
-  $("micinfo").title = JSON.stringify(st);
-  if (/hands-free|hfp|headset|wh-1000/i.test(t.label)) $("micinfo").textContent += " (Bluetooth : bande étroite ?)";
-  dbg("micro :", t.label, st);
-  // liste des micros (les noms ne sont visibles qu'après autorisation)
+  dbg(`getUserMedia : ${Math.round(performance.now() - t0)} ms`, micLabel(), stream.getAudioTracks()[0].getSettings());
+  connectRecorder(); micInfo();
+  return stream;
+}
+function release() {
+  if (!stream) return;
+  stream.getTracks().forEach(t => t.stop()); stream = null;
+  connectRecorder(); micInfo();
+}
+let lastMicLabel = "";
+function micInfo() {
+  const t = stream && stream.getAudioTracks()[0];
+  if (t) {
+    lastMicLabel = t.label; const st = t.getSettings();
+    $("micinfo").textContent = `🎙 ${t.label || "micro"}` + (st.sampleRate ? ` · ${st.sampleRate / 1000} kHz` : "") + " · ouvert";
+    $("micinfo").title = JSON.stringify(st);
+    if (BT.test(t.label)) $("micinfo").textContent += " (Bluetooth : mode appel, bande étroite)";
+  } else {
+    $("micinfo").textContent = `🎙 ${lastMicLabel || "micro"} · fermé` + (mode === "espace" ? " (s'ouvre quand tu appuies sur espace)" : "");
+  }
+  if (mode === "auto" && micReady) $("micinfo").textContent += " · mode auto : micro ouvert en permanence";
+}
+async function refreshDevices() {
   const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+  const curId = stream && stream.getAudioTracks()[0] ? stream.getAudioTracks()[0].getSettings().deviceId : pref("prof-mic", "");
   $("micsel").innerHTML = "";
   for (const d of devs) {
-    const o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || d.deviceId.slice(0, 8);
-    if (d.deviceId === st.deviceId) o.selected = true; $("micsel").append(o);
+    const o = document.createElement("option"); o.value = d.deviceId; o.textContent = (d.label || d.deviceId.slice(0, 8)) + (BT.test(d.label) ? " (Bluetooth)" : "");
+    if (d.deviceId === curId) o.selected = true; $("micsel").append(o);
   }
-  if (rec) connectRecorder();
-  if (mic) { try { mic.destroy(); } catch (e) {} mic = null; }
-  try { await startVad(); } catch (e) { console.error(e); dbg("VAD indisponible", e); }
+  return devs;
 }
-$("micsel").onchange = async () => { setPref("prof-mic", $("micsel").value); await openMic($("micsel").value); await setMode(mode); };
-$("filters").onchange = async () => { setPref("prof-filters", $("filters").checked ? "1" : "0"); await openMic($("micsel").value || pref("prof-mic", "")); await setMode(mode); };
+async function pickDefaultMic() {
+  // 1er lancement (aucun choix mémorisé) : le micro intégré plutôt que celui d'un casque Bluetooth
+  const devs = await refreshDevices();
+  if (pref("prof-mic", "") && devs.some(d => d.deviceId === pref("prof-mic", ""))) return;
+  const real = devs.filter(d => d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications");
+  const choice = real.find(d => !BT.test(d.label) && /built-?in|intégr|interne|internal|analog/i.test(d.label))
+              || real.find(d => !BT.test(d.label)) || real[0];
+  if (choice) { setPref("prof-mic", choice.deviceId); dbg("micro par défaut :", choice.label); }
+}
+async function vadOn() {
+  await acquire();
+  vadOff();
+  try { await startVad(); if (!muted) mic.start(); } catch (e) { console.error(e); dbg("VAD indisponible", e); }
+}
+function vadOff() { if (mic) { try { mic.pause(); mic.destroy(); } catch (e) {} mic = null; } }
+async function reopen() {          // nouveau micro ou nouveaux filtres
+  const wasOpen = !!stream; release();
+  if (mode === "auto" && micReady) await vadOn(); else if (wasOpen) await acquire();
+  await refreshDevices(); micInfo();
+}
+$("micsel").onchange = async () => { setPref("prof-mic", $("micsel").value); await reopen(); };
+$("filters").onchange = async () => { setPref("prof-filters", $("filters").checked ? "1" : "0"); await reopen(); };
 $("filters").checked = pref("prof-filters", "1") === "1";
 
 // --- calibration du micro : l'utilisateur lit des phrases de référence ; le brut (taux natif) + la vérité
@@ -581,10 +640,10 @@ function calShow() {
 async function calSetFilters(on) {
   if ($("filters").checked === on) return;
   $("filters").checked = on;
-  await openMic($("micsel").value || pref("prof-mic", "")); await setMode(mode);
+  await reopen();
 }
 async function openCalib() {
-  if (!stream) { showErr("démarre d'abord le cours (micro)"); return; }
+  if (!micReady) { showErr("démarre d'abord le cours (micro)"); return; }
   if (recording) stopRec(false);
   stopAll(false); setPaused(false);
   calOpen = true; calK = 0; calFilters0 = $("filters").checked;
@@ -596,16 +655,24 @@ async function closeCalib() {
   if (calRec) { calRec = false; chunks = []; }
   calOpen = false; $("calib").classList.remove("open", "rec");
   await calSetFilters(calFilters0);
+  if (mode === "espace") release();
 }
 function calToggle() {
   const {pass, i} = calStep(); if (pass >= 2) return;
   if (!calRec) {
-    if (rec.state !== "running") rec.resume();
-    chunks = []; calRec = true; $("calib").classList.add("rec"); $("chint").textContent = "● j'enregistre… espace quand tu as fini";
+    if (starting) return;
+    starting = true; recKeyT = performance.now(); firstChunkT = null;
+    $("chint").textContent = "ouverture du micro…";
+    acquire().then(async () => {
+      if (rec.state !== "running") await rec.resume();
+      starting = false; chunks = []; calRec = true; firstChunkT = null;
+      $("calib").classList.add("rec"); $("chint").textContent = "● j'enregistre… espace quand tu as fini";
+    }).catch(e => { starting = false; showErr("micro : " + e.name); });
     return;
   }
   setTimeout(async () => {                       // 300 ms de marge : la fin de la dernière syllabe
     calRec = false; $("calib").classList.remove("rec");
+    if (mode === "espace") release();
     const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
     let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; } chunks = [];
     ws.send(JSON.stringify({t: "audio", sr: rec.sampleRate, mic: micLabel(), target: "calib", run: calRun,
@@ -664,9 +731,9 @@ function headset(mode) {
 $("headset").checked = pref("prof-headset", "0") === "1";
 $("headset").onchange = async () => {
   setPref("prof-headset", $("headset").checked ? "1" : "0");
-  if (!$("headset").checked || !stream) return;
+  if (!$("headset").checked || !micReady) return;
   const r = await headset("appel"); casqueMsg(r);
-  await new Promise(r => setTimeout(r, 1200)); await openMic(pref("prof-mic", "")); await setMode(mode);
+  await new Promise(r => setTimeout(r, 1200)); await reopen();
 };
 function casqueMsg(r) { if (!r.ok) showErr("casque : " + r.out); else dbg("casque :", r.out); }
 $("go").onclick = async () => {
@@ -677,9 +744,13 @@ $("go").onclick = async () => {
     await new Promise(r => setTimeout(r, 1200));           // la source bluez_input.* met ~1 s à apparaître
   }
   try {
-    await openMic(pref("prof-mic", ""));
+    await acquire();                 // autorisation du micro (et les noms des micros pour la liste)
+    micReady = true;
+    await pickDefaultMic();
+    release();                       // on ne garde rien d'ouvert : chaque appui sur espace rouvre le micro
+    await refreshDevices();
     await startRecorder();
-    await setMode(mic ? mode : "espace");
+    await setMode(mode);
   } catch (e) { console.error(e); micErr = "micro indisponible (" + e.name + ") : écris tes questions"; $("mute").textContent = "Micro : absent"; show("listening"); }
   $("cover").remove();
   send({t: "start"});
@@ -689,7 +760,7 @@ $("send").onclick = () => mode === "espace" ? (recording ? stopRec(true) : start
 $("mute").onclick = () => {
   muted = !muted; $("mute").textContent = muted ? "Micro : coupé" : "Micro : ouvert";
   if (muted && recording) stopRec(false);
-  if (mic && mode === "auto") muted ? mic.pause() : mic.start();
+  if (mode === "auto") { if (muted) { vadOff(); release(); } else vadOn(); }
   show(serverState === "done" ? "listening" : serverState);
 };
 document.addEventListener("keydown", e => {
@@ -706,13 +777,20 @@ document.addEventListener("keydown", e => {
   if (e.key.toLowerCase() === "r" && plain) { e.preventDefault(); answerOpen ? closeAnswer() : openAnswer(); return; }
   if (e.key.toLowerCase() === "p" && plain) { e.preventDefault(); setPaused(!userPaused); return; }
   if (e.key === "ArrowLeft" && plain) { e.preventDefault(); rewind(); return; }
-  if (!stream) return;
+  if (!micReady) return;
   if (e.code === "Space") {
     e.preventDefault(); if (e.repeat || muted) return;
     if (mode === "espace") recording ? stopRec(true) : startRec();
     else forceEnd();
   } else if (e.code === "Escape" && recording) stopRec(false);
 });
+// page cachée ou fermée : aucun micro ouvert (le mode auto le rouvre au retour)
+document.addEventListener("visibilitychange", () => {
+  if (!micReady) return;
+  if (document.hidden) { if (recording) stopRec(true, true); vadOff(); if (!calRec) release(); }
+  else if (mode === "auto" && !muted) vadOn();
+});
+window.addEventListener("pagehide", () => { vadOff(); release(); });
 // un clic dans le tableau (iframe) lui donne le clavier : on le reprend pour que espace marche toujours
 window.addEventListener("blur", () => setTimeout(() => { if (document.activeElement === $("board")) $("board").blur(); window.focus(); }, 200));
 $("txt").onkeydown = e => {
