@@ -11,6 +11,33 @@ micro (page, VAD Silero) ──segment──▶ Whisper large-v3-turbo (GPU)
         └── iframe ◀── cahier :8777 ◀───────┘
 ```
 
+## Whiteboard (l'application)
+
+```bash
+/usr/bin/python3 install_desktop.py     # entrée « Whiteboard » dans le menu des applications, commande `whiteboard`
+```
+
+Fenêtre native GTK + WebKit (WM_CLASS « Whiteboard », processus « whiteboard »), sans navigateur.
+L'accueil liste les boards (les cahiers de `~/.claude/cahier`) : « Reprendre », ou « Nouveau board » (sujet → slug).
+L'app démarre le Prof du board choisi (`prof_server.py` sur le port 8790, un seul à la fois) ; « ⌂ Boards » revient
+à l'accueil. Pendant que le prof parle ou que tu enregistres, le Prof écrit
+`~/.local/state/regulator/activity/whiteboard.json` pour Regulator (app de travail « whiteboard »).
+Casque Bluetooth : ⚙ Réglages → « mode appel pendant la séance » appelle `casque-mode appel` avant d'ouvrir le
+micro et `casque-mode musique` une fois à la fin (seulement si c'est le Prof qui l'avait basculé).
+
+## Mesurer la reconnaissance vocale
+
+⚙ Réglages → « 🎙 Calibrer le micro » : lire 12 phrases (cours + calcul), avec puis sans les filtres du navigateur.
+Les enregistrements bruts vont dans `calib/<date>_<micro>/`. Ensuite :
+
+```bash
+.venv/bin/python bench_asr.py              # WER par réglage -> calib/resultats.md
+.venv/bin/python bench_asr.py --voxtral    # + Voxtral Mini 3B (~9 Go de VRAM)
+```
+
+Le réglage retenu se choisit par variables : `PROF_WHISPER` (large-v3-turbo), `PROF_WHISPER_COMPUTE`
+(int8_float16), `PROF_WHISPER_BEAM` (5).
+
 ## Installer
 
 ```bash
@@ -22,6 +49,8 @@ uv venv -p 3.12 .venv && uv pip install -p .venv/bin/python -r requirements.txt
 ```bash
 ./prof.sh sift "SIFT (Scale-Invariant Feature Transform)"
 ```
+
+(pour le débogage ; au quotidien, l'app Whiteboard)
 
 Crée (ou reprend) le cahier `sift`, charge Whisper + Piper, lance Claude, ouvre http://localhost:8778/ dans Opera.
 Cliquer « Démarrer le cours » (autorise micro et son). Parler ; couper le prof en parlant par-dessus.
