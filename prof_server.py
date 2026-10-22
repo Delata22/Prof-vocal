@@ -893,7 +893,11 @@ def casque_musique_si_besoin():
 
 
 if __name__ == "__main__":
-    import signal
+    import signal, ctypes
+    try:        # nom court du processus (Regulator : keep_alive de l'app Whiteboard)
+        ctypes.CDLL(None).prctl(15, b"prof_server", 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
 
     def _term(*_):                      # arrêt par Whiteboard : même sortie propre que Ctrl-C
         raise KeyboardInterrupt
