@@ -38,6 +38,7 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #log .u .shows{color:var(--acc);font-weight:400;font-size:13px}
 #silentbtn.on{background:var(--think);color:#fff;border-color:var(--think);font-weight:600}
 body.silent #bar{box-shadow:inset 0 3px 0 var(--think)} #dot.reading{background:var(--think)}
+#backbtn{font-size:15px;font-weight:600;padding:6px 14px;margin-bottom:8px;background:var(--acc);color:#fff;border:0}
 #log .err{color:var(--red);font-size:13px}
 #answer{display:none;position:fixed;left:14px;right:300px;bottom:calc(30vh + 8px);max-height:55vh;overflow:auto;background:var(--card);border:2px solid var(--acc);border-radius:12px;padding:10px 14px;z-index:7;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 #answer.open{display:flex}
@@ -70,7 +71,8 @@ button.primary{background:var(--acc);color:#fff;border:0}
 <body>
 <iframe id="board"></iframe>
 <div id="bar">
-  <div><div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div><div id="meter"><i></i></div></div>
+  <div><button id="backbtn" hidden title="Quitter ce tableau et revenir au choix des tableaux (Ctrl+H). Arrête le prof de ce tableau.">← Tableaux</button>
+  <div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div><div id="meter"><i></i></div></div>
   <div id="log"></div>
   <div id="side">
     <div style="display:flex;gap:6px"><button id="mode" title="espace : appui = j'enregistre, 2e appui = j'envoie ; auto : détection de fin de phrase">Mode : espace</button>
@@ -79,7 +81,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <input id="txt" placeholder="ou écris ta question + Entrée">
     <div style="display:flex;gap:6px"><button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
     <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button>
-    <button id="homebtn" title="Revenir à la liste des boards (Ctrl+H)" hidden>⌂ Boards</button></div>
+</div>
     <button id="silentbtn" title="Touche S : pas de voix, pas de micro ; tu lis et tu écris">🔊 Voix (S)</button>
     <div style="display:flex;gap:6px"><button id="rew" title="Flèche gauche : reprendre la phrase ; 2 appuis rapides : la précédente">⏮ Phrase</button>
     <button id="pause" title="Touche P">⏸ Pause</button>
@@ -761,7 +763,11 @@ function toggleSilent() { send({t: "silent", on: !silent}); }
 $("silentbtn").onclick = toggleSilent;
 // ouvert depuis l'app Whiteboard : bouton retour à l'accueil, et battement d'activité pour Regulator
 const HUB = new URLSearchParams(location.search).get("hub");
-if (HUB) { $("homebtn").hidden = false; $("homebtn").onclick = () => { location.href = HUB; }; }
+if (HUB) {
+  $("backbtn").hidden = false;
+  // revenir au menu arrête le prof de ce tableau (GPU, micro, casque remis en musique) : ?stop=1
+  $("backbtn").onclick = () => { stopAll(false); vadOff(); release(); location.href = HUB + (HUB.includes("?") ? "&" : "?") + "stop=1"; };
+}
 setInterval(() => {
   // en mode silencieux, le clavier compte déjà pour Regulator : pas de signal « playing »
   const active = !silent && (playing || recording || calRec || serverState === "thinking" || serverState === "transcribing");

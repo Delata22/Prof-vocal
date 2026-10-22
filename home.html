@@ -82,6 +82,11 @@ async function open(api, body, title) {
 }
 $("new").onsubmit = e => { e.preventDefault(); const t = $("topic").value.trim(); if (t) open("/api/new", {topic: t}, t); };
 $("lcancel").onclick = async () => { waiting = false; await fetch("/api/stop", {method: "POST"}); $("loading").classList.remove("on"); list(); };
+// retour depuis un tableau (« ← Tableaux » ou Ctrl+H) : on arrête son prof
+if (new URLSearchParams(location.search).has("stop")) {
+  history.replaceState(null, "", "/");
+  fetch("/api/stop", {method: "POST"}).then(list);
+}
 list();
 </script>
 </body>

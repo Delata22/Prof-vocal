@@ -223,7 +223,7 @@ class WhiteboardApp(Gtk.Application):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda *_: (self.quit(), False)[1])
         for name, cb, accels in [
             ("reload", lambda *_: self.view.reload(), ["<Primary>r", "F5"]),
-            ("home", lambda *_: self.view.load_uri(self.hub), ["<Primary>h"]),
+            ("home", lambda *_: self.view.load_uri(self.hub + "?stop=1"), ["<Primary>h"]),   # arrête le prof du tableau
             ("quit", lambda *_: self.quit(), ["<Primary>q"]),
             ("fullscreen", self.toggle_fullscreen, ["F11"]),
             ("inspector", lambda *_: self.view.get_inspector().show(), ["<Primary><Shift>i"]),
@@ -257,10 +257,44 @@ class WhiteboardApp(Gtk.Application):
         view.connect("permission-request", self.on_permission)
         view.connect("decide-policy", self.on_policy)
         view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or TITLE))
+        view.connect("web-process-terminated", self.on_web_crash)
+        if os.environ.get("WHITEBOARD_NO_GPU") == "1":     # piste si les écrans noirs viennent du rendu GPU
+            s.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.NEVER)
         view.load_uri(self.hub)
         window.add(view)
         self.window, self.view = window, view
         window.show_all()
+
+    def on_web_crash(self, view, reason):
+        """Le processus de rendu est mort (écran noir) : on note le motif et le contexte, puis on recharge
+        (au plus 3 fois par minute, sinon une page d'erreur au lieu d'une boucle)."""
+        now = time.time()
+        self.crashes = [t for t in getattr(self, "crashes", []) if now - t < 60] + [now]
+        try:
+            name = WebKit2.WebProcessTerminationReason(reason).value_nick
+        except Exception:
+            name = str(reason)
+        last = ""
+        if PROF.log and PROF.log.exists():          # dernières commandes du tableau, pour retrouver la carte en cause
+            lines = [l for l in PROF.log.read_text(errors="replace").splitlines() if "outil" in l or "repère" in l]
+            last = " | ".join(l.strip()[:160] for l in lines[-3:])
+        line = (f"{time.strftime('%F %T')} rendu WebKit terminé : {name} ; page {view.get_uri()} ; "
+                f"board {PROF.slug} ; dernières commandes : {last}")
+        print(line, file=sys.stderr, flush=True)
+        try:
+            STATE.mkdir(parents=True, exist_ok=True)
+            with open(STATE / "crashes.log", "a") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+        if len(self.crashes) <= 3:
+            GLib.timeout_add(500, lambda: (view.reload(), False)[1])
+        else:
+            view.load_html(f"""<body style="font:16px system-ui;padding:40px;background:#1b1b1a;color:#ecebe6">
+              <h2>L'affichage a planté {len(self.crashes)} fois en une minute ({name}).</h2>
+              <p>Le motif est noté dans {STATE / 'crashes.log'}.</p>
+              <p><a style="color:#85B7EB" href="{self.hub}">Revenir à l'accueil</a> · ou F5 pour recharger.</p></body>""", self.hub)
+        return True
 
     def on_permission(self, view, request):
         # micro et caméra : seulement pour nos pages locales ; le reste (géolocalisation, notifications…) refusé
@@ -324,8 +358,23 @@ def set_process_name(name: str) -> None:
         pass
 
 
+def log_to_file() -> None:
+    """stdout / stderr de l'app ET des processus WebKit (ils héritent du descripteur 2) dans un fichier,
+    pour avoir la trace d'un écran noir."""
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        f = open(STATE / "whiteboard.log", "a", buffering=1)
+        f.write(f"\n===== {time.strftime('%F %T')} lancement (pid {os.getpid()}) =====\n")
+        os.dup2(f.fileno(), 1)
+        os.dup2(f.fileno(), 2)
+    except OSError:
+        pass
+
+
 def main() -> int:
     set_process_name("whiteboard")
+    if not sys.stderr.isatty():         # lancé depuis le menu : pas de terminal pour voir les erreurs
+        log_to_file()
     return WhiteboardApp().run([WM_CLASS, *sys.argv[1:]])
 
 
