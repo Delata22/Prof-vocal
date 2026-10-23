@@ -328,9 +328,13 @@ class Brain:
         self.proc.stdin.write((json.dumps(obj) + "\n").encode())
         await self.proc.stdin.drain()
 
-    async def ask(self, gen, text):
+    async def ask(self, gen, text, images=()):
+        """images : [(media_type, base64)] jointes au message (blocs image du message utilisateur)."""
         self.pending.append(gen)
-        await self._send({"type": "user", "message": {"role": "user", "content": text}})
+        content = [{"type": "text", "text": text}] + [
+            {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}} for mt, b64 in images
+        ] if images else text
+        await self._send({"type": "user", "message": {"role": "user", "content": content}})
 
     async def interrupt(self):
         if self.pending:
@@ -515,7 +519,8 @@ class Prof:
         self.conv = Converter(a.conv_model, a.topic)
         self.gen_text = ""
         self.cues = []
-        self.silent = bool(self.brain.meta.get("silent"))   # mode silencieux, mémorisé par board
+        self.silent = bool(self.brain.meta.get("silent"))
+        self.pending_images = []        # [(chemin, media_type, base64)] à joindre au prochain message   # mode silencieux, mémorisé par board
         self.mode_notice = ""                  # repères en attente d'une phrase
         self.started = False
 
@@ -548,9 +553,40 @@ class Prof:
             else:
                 msg = f"[Interruption : l'élève a repris la parole avant d'entendre ta réponse.]\n{msg}"
             self.interrupted = None
+        images, self.pending_images = self.pending_images, []
+        if images:          # photos collées / déposées : sauvées dans sessions/<slug>/images, jointes au message
+            msg += "\n" + "\n".join(f"[photo jointe : {p}]" for p, _mt, _b in images)
         self.history.append(("élève", text))
         await self.state("thinking")
-        await self.brain.ask(self.gen, msg)
+        await self.brain.ask(self.gen, msg, [(mt, b) for _p, mt, b in images])
+
+    def take_urls(self):
+        urls, self.pending_urls = getattr(self, "pending_urls", []), []
+        return urls
+
+    def save_image(self, data_url):
+        """Photo envoyée par la page (data URL) : réduite à 1600 px de côté au plus, JPEG, sauvée dans le board."""
+        import io
+        from PIL import Image, ImageOps
+        b64 = data_url.split(",", 1)[-1]
+        raw = base64.b64decode(b64)
+        if len(raw) > 25 * 1024 * 1024:
+            raise ValueError("image trop lourde (25 Mo max)")
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
+        if im.mode in ("RGBA", "LA", "P"):        # fond blanc sous la transparence (captures d'écran)
+            bg = Image.new("RGB", im.size, "white")
+            bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1])
+            im = bg
+        im = im.convert("RGB")
+        im.thumbnail((1600, 1600))
+        d = SESS / self.a.slug / "images"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / (time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}.jpg")
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=88)
+        path.write_bytes(buf.getvalue())
+        log(f"photo sauvée : {path.name} ({im.size[0]}x{im.size[1]}, {len(buf.getvalue()) // 1024} ko)")
+        return str(path), "image/jpeg", base64.b64encode(buf.getvalue()).decode()
 
     async def take_selection(self):
         """Ce que l'élève montre au tableau (sélection à la souris dans une carte) : (préfixe pour le prof,
@@ -873,7 +909,7 @@ class Prof:
                     continue
                 t_stt = time.time()
                 prefix, shows = await self.take_selection()
-                await self.send({"t": "user", "text": text, "shows": shows})
+                await self.send({"t": "user", "text": text, "shows": shows, "images": self.take_urls()})
                 await self.question(text, t0, t_stt, prefix)
             elif msg.type == WSMsgType.TEXT:
                 j = json.loads(msg.data)
@@ -894,7 +930,7 @@ class Prof:
                     asyncio.create_task(self.answer_line(j["text"], j.get("last")))
                 elif j["t"] == "text":
                     prefix, shows = await self.take_selection()
-                    await self.send({"t": "user", "text": j["text"], "shows": shows})
+                    await self.send({"t": "user", "text": j["text"], "shows": shows, "images": self.take_urls()})
                     await self.question(j["text"], prefix=prefix)
                 elif j["t"] == "audio":
                     next_sr, next_hdr = int(j.get("sr", 16000)), j
@@ -921,6 +957,19 @@ class Prof:
                         await self.on_brain("text", self.gen, txt[k:k + n])
                         await asyncio.sleep(0.02)
                     await self.on_brain("result", self.gen, {"subtype": "success"})
+                elif j["t"] == "images":           # photos à joindre au prochain message de l'élève
+                    urls = []
+                    for im in j.get("images", [])[:6]:
+                        try:
+                            saved = await loop.run_in_executor(None, self.save_image, im.get("data", ""))
+                        except Exception as e:
+                            log("photo refusée :", e)
+                            await self.send({"t": "error", "text": f"photo refusée : {e}"})
+                            continue
+                        self.pending_images.append(saved)
+                        urls.append("/images/" + Path(saved[0]).name)
+                    log(f"{len(urls)} photo(s) jointe(s) au prochain message")
+                    self.pending_urls = urls
                 elif j["t"] == "silent":
                     on = bool(j.get("on"))
                     if on != self.silent:
@@ -978,6 +1027,8 @@ async def main():
                                                    headers={"Cache-Control": "no-store"}))
     app.router.add_get("/ws", prof.handle_ws)
     app.router.add_static("/tests", HERE / "tests")
+    (SESS / a.slug / "images").mkdir(parents=True, exist_ok=True)
+    app.router.add_static("/images", SESS / a.slug / "images")       # photos de l'élève (miniatures de la transcription)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", a.port).start()

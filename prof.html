@@ -39,6 +39,23 @@ button.big{font-size:18px;padding:10px 22px;background:var(--acc);color:#fff;bor
 #silentbtn.on{background:var(--think);color:#fff;border-color:var(--think);font-weight:600}
 body.silent #bar{box-shadow:inset 0 3px 0 var(--think)} #dot.reading{background:var(--think)}
 #backbtn{font-size:15px;font-weight:600;padding:6px 14px;margin-bottom:8px;background:var(--acc);color:#fff;border:0}
+#side{grid-column:3;grid-row:1 / span 2} .txtrow{display:flex;gap:4px;align-items:center}
+#composer{grid-column:1 / 3;grid-row:2;display:none;flex-direction:column;gap:6px;align-self:end}
+body.silent #composer,#composer.has{display:flex}
+#composer .crow{display:flex;gap:8px;align-items:flex-end}
+#bigtxt{flex:1;font:inherit;font-size:15px;line-height:1.4;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--fg);resize:none;min-height:calc(2 * 1.4em + 16px);max-height:calc(6 * 1.4em + 16px);overflow-y:auto}
+#bigtxt:focus{outline:2px solid var(--think);border-color:transparent}
+body:not(.silent) #composer .crow{display:none}
+body.silent .txtrow{display:none}
+body.silent #bar{max-height:34vh;grid-template-columns:200px minmax(0,1fr) auto}
+body.silent #log{max-height:calc(34vh - 110px)}
+body.silent #side button{font-size:12px;padding:3px 8px}
+#thumbs{display:flex;gap:8px;flex-wrap:wrap} #thumbs:empty{display:none}
+#thumbs .th{position:relative} #thumbs img{height:64px;border-radius:7px;border:1px solid var(--line);display:block}
+#thumbs .th button{position:absolute;top:-6px;right:-6px;padding:0 6px;border-radius:50%;font-size:12px;background:var(--card)}
+#bar.drop{outline:3px dashed var(--acc);outline-offset:-3px}
+#log .u img{height:56px;border-radius:6px;margin:4px 6px 0 0;border:1px solid var(--line);cursor:zoom-in;vertical-align:top}
+#log .u img.big{height:auto;max-width:100%;cursor:zoom-out}
 #log .err{color:var(--red);font-size:13px}
 #answer{display:none;position:fixed;left:14px;right:300px;bottom:calc(30vh + 8px);max-height:55vh;overflow:auto;background:var(--card);border:2px solid var(--acc);border-radius:12px;padding:10px 14px;z-index:7;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 #answer.open{display:flex}
@@ -78,7 +95,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <div style="display:flex;gap:6px"><button id="mode" title="espace : appui = j'enregistre, 2e appui = j'envoie ; auto : détection de fin de phrase">Mode : espace</button>
     <button id="send" title="Espace">Parler / Envoyer</button></div>
     <button id="mute" title="Couper / rouvrir le micro">Micro : ouvert</button>
-    <input id="txt" placeholder="ou écris ta question + Entrée">
+    <div class="txtrow"><input id="txt" placeholder="ou écris ta question + Entrée"><button id="attach2" title="Joindre une photo (ou Ctrl+V, ou glisser-déposer)">📎</button></div>
     <div style="display:flex;gap:6px"><button id="test" title="Envoie un wav enregistré comme si tu avais parlé">Question test (wav)</button>
     <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button>
 </div>
@@ -89,6 +106,13 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <span id="micinfo"></span>
     <span id="lat"></span>
   </div>
+  <div id="composer">
+    <div id="thumbs"></div>
+    <div class="crow"><button id="attach" title="Joindre une photo (ou Ctrl+V, ou glisser-déposer)">📎</button>
+      <textarea id="bigtxt" rows="2" placeholder="Écris ta question… (Entrée : envoyer · Maj+Entrée : nouvelle ligne · Ctrl+V / glisser : photo)"></textarea>
+      <button id="bigsend" class="primary">Envoyer</button></div>
+  </div>
+  <input type="file" id="filepick" accept="image/*" multiple hidden>
 </div>
 <div id="answer">
   <div class="ahead"><b>Ta réponse</b>
@@ -288,6 +312,10 @@ function connect() {
     } else if (m.t === "user") {
       const d = addLine("u", m.text); pLine = null;
       if (m.shows) { const sp = document.createElement("span"); sp.className = "shows"; sp.textContent = ` (en montrant : ${m.shows})`; d.append(sp); }
+      for (const u of m.images || []) {
+        const im = document.createElement("img"); im.src = u; im.title = "photo envoyée (clic : agrandir)";
+        im.onclick = () => im.classList.toggle("big"); d.append(document.createElement("br"), im);
+      }
     } else if (m.t === "say") {
       if (m.gen !== gen) return;
       const el = m.text ? proseSpan(m.text) : null;
@@ -298,6 +326,7 @@ function connect() {
       if (!playing) show("thinking", m.text);
     } else if (m.t === "done") {
       if (m.gen === gen) { serverState = "done"; if (!playing && !queue.length) show("listening"); }
+      if (silent && !answerOpen && !["INPUT", "TEXTAREA", "MATH-FIELD"].includes(document.activeElement.tagName)) $("bigtxt").focus();
     }
   };
 }
@@ -323,6 +352,7 @@ function sendSegment(f32, why, sr = 16000) {
   const sec = f32.length / sr;
   if (sec < 0.3) { dbg("segment trop court, ignoré", sec); show("listening"); return; }
   if (!ws || ws.readyState !== 1) { dbg("segment PERDU : websocket fermée", ws && ws.readyState); show("listening", "segment perdu : connexion au serveur coupée"); return; }
+  if (!answerOpen) flushImages();                     // photos jointes : avec cette question parlée
   const hdr = {t: "audio", sr, mic: micLabel()};       // annonce le taux (et la destination) du segment qui suit
   if (answerOpen) { hdr.target = "answer"; hdr.last = lastLatex(); ansPending(true); }
   ws.send(JSON.stringify(hdr));
@@ -758,6 +788,7 @@ function setSilentUI(on) {
   if (cover) cover.innerHTML = on ? "<b>Mode silencieux</b> : pas de voix ni de micro. Tu lis les réponses et tu écris tes questions (espace → champ texte). S pour repasser en mode voix."
                                   : cover.dataset.voice || cover.innerHTML;
   micInfo(); show(serverState === "done" ? "listening" : serverState);
+  if (on) setTimeout(() => $("bigtxt").focus(), 50);
 }
 function toggleSilent() { send({t: "silent", on: !silent}); }
 $("silentbtn").onclick = toggleSilent;
@@ -834,7 +865,7 @@ document.addEventListener("keydown", e => {
   if (e.code === "Space" && silent) {          // silencieux : espace mène au champ texte (ou à la ligne de calcul)
     e.preventDefault();
     if (answerOpen) { const mf = aLines().map(r => r.querySelector("math-field")).pop(); (mf || $("atext")).focus(); }
-    else $("txt").focus();
+    else $("bigtxt").focus();
     return;
   }
   if (e.code === "Space") {
@@ -852,12 +883,72 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => { vadOff(); release(); });
 // un clic dans le tableau (iframe) lui donne le clavier : on le reprend pour que espace marche toujours
 window.addEventListener("blur", () => setTimeout(() => { if (document.activeElement === $("board")) $("board").blur(); window.focus(); }, 200));
-$("txt").onkeydown = e => {
-  if (e.key !== "Enter" || !$("txt").value.trim()) return;
+// --- envoyer une question écrite (petit champ en mode voix, grande zone en silencieux), avec les photos jointes ---
+function sendText(text) {
+  text = text.trim();
+  if (!text && !pendingImgs.length) return false;
   if (busy()) { const last = cur ? cur.text : ""; stopAll(true); gen = -1; send({t: "barge", last}); }
   tSpeechEnd = performance.now(); vadWait = 0;
-  send({t: "text", text: $("txt").value.trim()}); $("txt").value = "";
+  flushImages();
+  send({t: "text", text: text || "(photo)"});
+  return true;
+}
+$("txt").onkeydown = e => {
+  if (e.key !== "Enter") return;
+  if (sendText($("txt").value)) $("txt").value = "";
 };
+function growBig() {          // 2 lignes au repos, jusqu'à 6, puis défilement
+  const t = $("bigtxt"); t.style.height = "";
+  if (t.value) t.style.height = t.scrollHeight + 2 + "px";
+}
+$("bigtxt").oninput = growBig;
+$("bigtxt").onkeydown = e => {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;     // Maj+Entrée : nouvelle ligne
+  e.preventDefault();
+  if (sendText($("bigtxt").value)) { $("bigtxt").value = ""; growBig(); }
+};
+$("bigsend").onclick = () => { if (sendText($("bigtxt").value)) { $("bigtxt").value = ""; growBig(); } $("bigtxt").focus(); };
+
+// --- photos : coller (Ctrl+V), glisser-déposer sur la barre, ou 📎 ; envoyées avec le message suivant ---
+let pendingImgs = [];
+function renderThumbs() {
+  $("thumbs").innerHTML = "";
+  pendingImgs.forEach((im, k) => {
+    const d = document.createElement("div"); d.className = "th";
+    d.innerHTML = `<img alt="photo jointe"><button title="Retirer">×</button>`;
+    d.querySelector("img").src = im.data;
+    d.querySelector("button").onclick = () => { pendingImgs.splice(k, 1); renderThumbs(); };
+    $("thumbs").append(d);
+  });
+  $("composer").classList.toggle("has", pendingImgs.length > 0);
+  if (pendingImgs.length && !silent) $("sub").textContent = `📎 ${pendingImgs.length} photo(s) : envoyée(s) avec ta prochaine question`;
+}
+function addImageFile(f) {
+  if (!f || !/^image\//.test(f.type)) return;
+  if (f.size > 25 * 1024 * 1024) { showErr("photo trop lourde (25 Mo max)"); return; }
+  const r = new FileReader();
+  r.onload = () => { pendingImgs.push({data: r.result, name: f.name}); renderThumbs(); };
+  r.readAsDataURL(f);
+}
+function flushImages() {
+  if (!pendingImgs.length) return;
+  send({t: "images", images: pendingImgs.map(i => ({data: i.data, name: i.name}))});
+  pendingImgs = []; renderThumbs();
+}
+$("attach").onclick = $("attach2").onclick = () => $("filepick").click();
+$("filepick").onchange = () => { [...$("filepick").files].forEach(addImageFile); $("filepick").value = ""; };
+document.addEventListener("paste", e => {
+  const files = [...(e.clipboardData ? e.clipboardData.items : [])].filter(i => i.kind === "file" && /^image\//.test(i.type)).map(i => i.getAsFile());
+  if (!files.length) return;
+  e.preventDefault(); files.forEach(addImageFile);
+});
+$("bar").addEventListener("dragover", e => { if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); $("bar").classList.add("drop"); } });
+$("bar").addEventListener("dragleave", e => { if (e.target === $("bar")) $("bar").classList.remove("drop"); });
+$("bar").addEventListener("drop", e => {
+  $("bar").classList.remove("drop");
+  if (!e.dataTransfer.files.length) return;
+  e.preventDefault(); [...e.dataTransfer.files].forEach(addImageFile);
+});
 $("test").onclick = async () => {
   // simule une prise de parole : wav 16 kHz mono -> Float32 -> serveur (comme le VAD)
   const ab = await (await fetch("/tests/question16k.wav")).arrayBuffer();
