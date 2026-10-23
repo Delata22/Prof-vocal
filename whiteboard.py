@@ -258,15 +258,47 @@ class WhiteboardApp(Gtk.Application):
         view.connect("decide-policy", self.on_policy)
         view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or TITLE))
         view.connect("web-process-terminated", self.on_web_crash)
-        # diagnostic du glisser-déposer au niveau GTK (journal whiteboard.log), sans l'intercepter
-        view.connect("drag-drop", lambda w, ctx, x, y, t: (print(
-            f"{time.strftime('%T')} GTK drag-drop : cibles {[str(a) for a in ctx.list_targets()]}", file=sys.stderr, flush=True), False)[1])
+        # Glisser-déposer d'un fichier : WebKitGTK passe à la page un dépôt VIDE (types sans données, constaté le
+        # 2026-10-23). On l'intercepte donc au niveau GTK : on demande la liste d'URI nous-mêmes et on la donne à la page,
+        # qui l'envoie au serveur ({t: "drop_paths"}) comme un chemin collé.
+        view.connect("drag-drop", self.on_drag_drop)
+        view.connect("drag-data-received", self.on_drag_data)
         if os.environ.get("WHITEBOARD_NO_GPU") == "1":     # piste si les écrans noirs viennent du rendu GPU
             s.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.NEVER)
         view.load_uri(self.hub)
         window.add(view)
         self.window, self.view = window, view
         window.show_all()
+
+    def on_drag_drop(self, view, ctx, x, y, t):
+        targets = [str(a) for a in ctx.list_targets()]
+        print(f"{time.strftime('%T')} GTK drag-drop : cibles {targets}", file=sys.stderr, flush=True)
+        if "text/uri-list" not in targets:
+            return False                              # un texte glissé : WebKit s'en occupe
+        self._our_drop = True
+        view.drag_get_data(ctx, Gdk.Atom.intern("text/uri-list", False), t)
+        view.stop_emission_by_name("drag-drop")
+        return True
+
+    def on_drag_data(self, view, ctx, x, y, data, info, t):
+        if not getattr(self, "_our_drop", False):
+            return
+        self._our_drop = False
+        view.stop_emission_by_name("drag-data-received")
+        uris = list(data.get_uris() or [])
+        if not uris:                                  # certaines sources ne donnent que du texte
+            uris = [u.strip() for u in (data.get_text() or "").splitlines() if u.strip() and not u.startswith("#")]
+        paths = []
+        for u in uris:
+            f = Gio.File.new_for_uri(u) if "://" in u else Gio.File.new_for_path(u)
+            if f.get_path():
+                paths.append(f.get_path())
+        print(f"{time.strftime('%T')} GTK dépôt : {paths or uris}", file=sys.stderr, flush=True)
+        Gtk.drag_finish(ctx, bool(paths), False, t)
+        if paths:
+            js = ("typeof send === 'function' ? (send({t: 'drop_paths', paths: %s}),"
+                  " (document.getElementById('sub') || {}).textContent = '📎 je lis l\u2019image…') : null") % json.dumps(paths)
+            view.run_javascript(js, None, None, None)
 
     def on_web_crash(self, view, reason):
         """Le processus de rendu est mort (écran noir) : on note le motif et le contexte, puis on recharge

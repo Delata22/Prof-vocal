@@ -637,14 +637,14 @@ class Prof:
 
     def read_dropped(self, uri):
         """Fichier glissé depuis le gestionnaire de fichiers (WebKitGTK ne donne que son chemin) : le serveur le lit
-        lui-même — image seulement, sous le dossier personnel, 25 Mo max — et renvoie une data URL réduite,
+        lui-même — image seulement, 25 Mo max — et renvoie une data URL réduite,
         traitée ensuite exactement comme une photo collée. Le prof n'a jamais à lire un chemin."""
         import io, urllib.parse
         from PIL import Image, ImageOps
         p = urllib.parse.unquote(uri[7:] if uri.startswith("file://") else uri).strip()
         path = Path(p).expanduser().resolve()
-        if not path.is_relative_to(Path.home()):
-            raise ValueError(f"{path.name} : hors de ton dossier personnel")
+        # pas de restriction de dossier (décision de l'élève : lecture partout) ; un dépôt passé par le portail
+        # de fichiers arrive sous /run/user/<uid>/doc/…
         if path.suffix.lower() not in self.IMG_EXT:
             raise ValueError(f"{path.name} n'est pas une image")
         if not path.is_file():
