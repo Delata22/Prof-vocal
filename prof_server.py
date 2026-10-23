@@ -298,8 +298,9 @@ class Brain:
                    # vocabulaire de la dictée et lexique de prononciation, que le prof complète en cours
                    # (~/.claude est protégé contre Edit : le lexique passe par pron.py)
                    "Read(./vocab.txt)", "Edit(./vocab.txt)", f"Bash(python3 {HERE / 'pron.py'}:*)",
-                   # lire les fichiers du board (copies des photos / PDF que l'élève joint), jamais au-delà
-                   "Read(./**)"]
+                   # lecture sans restriction de chemin (décision de l'élève, 2026-10-23 : « les mêmes perms de
+                   # lecture qu'un Claude ») : il ouvre directement les fichiers cités ; l'écriture reste limitée
+                   "Read", "Glob", "Grep"]
         args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--include-partial-messages",
                 "--setting-sources", "",                 # pas de hooks utilisateur (récap quotidien...)
@@ -307,9 +308,8 @@ class Brain:
                 # pas d'auto-mémoire (elle autorise des écritures dans ~/.claude/projects/…/memory) ;
                 # deny explicite sur ~/.claude, au cas où
                 "--settings", json.dumps({"autoMemoryEnabled": False, "permissions": {"deny": [
-                    "Edit(~/.claude/**)", f"Edit(/{Path.home()}/.claude/**)",
-                    "Read(~/.claude/projects/**)", f"Read(/{Path.home()}/.claude/projects/**)"]}}),
-                "--tools", "Bash,Write,Read,Edit", "--allowedTools", *allowed, "--permission-mode", "dontAsk",
+                    "Edit(~/.claude/**)", f"Edit(/{Path.home()}/.claude/**)"]}}),
+                "--tools", "Bash,Write,Read,Edit,Glob,Grep", "--allowedTools", *allowed, "--permission-mode", "dontAsk",
                 "--append-system-prompt", system]
         if self.meta.get("session_id"):
             args += ["--resume", self.meta["session_id"]]
