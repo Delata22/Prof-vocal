@@ -7,3 +7,4 @@ nvidia-cudnn-cu12==9.*
 num2words
 transformers>=4.56  # optionnel : bench_asr.py --voxtral (avec torch cu128)
 pillow
+pillow-heif

@@ -564,6 +564,47 @@ class Prof:
         urls, self.pending_urls = getattr(self, "pending_urls", []), []
         return urls
 
+    IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
+
+    def read_dropped(self, uri):
+        """Fichier glissé depuis le gestionnaire de fichiers (WebKitGTK ne donne que son chemin) : le serveur le lit
+        lui-même — image seulement, sous le dossier personnel, 25 Mo max — et renvoie une data URL réduite,
+        traitée ensuite exactement comme une photo collée. Le prof n'a jamais à lire un chemin."""
+        import io, urllib.parse
+        from PIL import Image, ImageOps
+        p = urllib.parse.unquote(uri[7:] if uri.startswith("file://") else uri).strip()
+        path = Path(p).expanduser().resolve()
+        if not path.is_relative_to(Path.home()):
+            raise ValueError(f"{path.name} : hors de ton dossier personnel")
+        if path.suffix.lower() not in self.IMG_EXT:
+            raise ValueError(f"{path.name} n'est pas une image")
+        if not path.is_file():
+            raise ValueError(f"{path.name} : fichier introuvable")
+        if path.stat().st_size > 25 * 1024 * 1024:
+            raise ValueError(f"{path.name} : trop lourde (25 Mo max)")
+        if path.suffix.lower() in (".heic", ".heif"):
+            try:
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except ImportError:
+                raise ValueError(f"{path.name} : format HEIC non pris en charge (convertis-la en JPEG)")
+        im = self._flatten(ImageOps.exif_transpose(Image.open(path)))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=88)
+        log(f"image déposée lue : {path} ({im.size[0]}x{im.size[1]})")
+        return path.name, "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    @staticmethod
+    def _flatten(im):
+        if im.mode in ("RGBA", "LA", "P"):        # fond blanc sous la transparence (captures d'écran)
+            from PIL import Image
+            bg = Image.new("RGB", im.size, "white")
+            bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1])
+            im = bg
+        im = im.convert("RGB")
+        im.thumbnail((1600, 1600))
+        return im
+
     def save_image(self, data_url):
         """Photo envoyée par la page (data URL) : réduite à 1600 px de côté au plus, JPEG, sauvée dans le board."""
         import io
@@ -572,13 +613,7 @@ class Prof:
         raw = base64.b64decode(b64)
         if len(raw) > 25 * 1024 * 1024:
             raise ValueError("image trop lourde (25 Mo max)")
-        im = ImageOps.exif_transpose(Image.open(io.BytesIO(raw)))
-        if im.mode in ("RGBA", "LA", "P"):        # fond blanc sous la transparence (captures d'écran)
-            bg = Image.new("RGB", im.size, "white")
-            bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1])
-            im = bg
-        im = im.convert("RGB")
-        im.thumbnail((1600, 1600))
+        im = self._flatten(ImageOps.exif_transpose(Image.open(io.BytesIO(raw))))
         d = SESS / self.a.slug / "images"
         d.mkdir(parents=True, exist_ok=True)
         path = d / (time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}.jpg")
@@ -957,6 +992,14 @@ class Prof:
                         await self.on_brain("text", self.gen, txt[k:k + n])
                         await asyncio.sleep(0.02)
                     await self.on_brain("result", self.gen, {"subtype": "success"})
+                elif j["t"] == "drop_paths":       # fichiers glissés depuis le disque (chemins / file://)
+                    for uri in j.get("paths", [])[:6]:
+                        try:
+                            name, data = await loop.run_in_executor(None, self.read_dropped, uri)
+                            await self.send({"t": "dropped", "name": name, "data": data})
+                        except Exception as e:
+                            log("dépôt refusé :", e)
+                            await self.send({"t": "drop_error", "text": str(e)})
                 elif j["t"] == "images":           # photos à joindre au prochain message de l'élève
                     urls = []
                     for im in j.get("images", [])[:6]:

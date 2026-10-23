@@ -290,6 +290,8 @@ function connect() {
     if (m.t === "voice") { fillVoices(null, m.voice); return; }
     if (m.t === "headset") { if (headsetWait) { headsetWait(m); headsetWait = null; } return; }
     if (m.t === "ans") { liveHide(); onAns(m); return; }
+    if (m.t === "dropped") { pendingImgs.push({data: m.data, name: m.name}); renderThumbs(); if (silent) $("bigtxt").focus(); return; }
+    if (m.t === "drop_error") { showErr(m.text); return; }
     if (m.t === "partial") {
       if (!m.latex) partialBusy = false;
       if (recording && answerOpen) liveShow(m.text, m.latex);
@@ -942,13 +944,35 @@ document.addEventListener("paste", e => {
   if (!files.length) return;
   e.preventDefault(); files.forEach(addImageFile);
 });
-$("bar").addEventListener("dragover", e => { if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); $("bar").classList.add("drop"); } });
-$("bar").addEventListener("dragleave", e => { if (e.target === $("bar")) $("bar").classList.remove("drop"); });
-$("bar").addEventListener("drop", e => {
+// Glisser-déposer depuis le gestionnaire de fichiers : WebKitGTK ne donne souvent que l'adresse du fichier
+// (text/uri-list, file:///…), et la zone de saisie l'insérait comme du texte. On intercepte sur TOUTE la fenêtre,
+// en capture (avant le textarea), et on demande au serveur de lire l'image lui-même.
+const isFileDrag = dt => dt && [...dt.types].some(t => t === "Files" || t === "text/uri-list" || t === "text/x-moz-url");
+function droppedPaths(dt) {
+  const raw = dt.getData("text/uri-list") || dt.getData("text/plain") || "";
+  return raw.split(/\r?\n/).map(l => l.trim())
+    .filter(l => l && !l.startsWith("#") && (l.startsWith("file://") || l.startsWith("/")));
+}
+window.addEventListener("dragover", e => {
+  if (!isFileDrag(e.dataTransfer)) return;
+  e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "copy"; $("bar").classList.add("drop");
+}, true);
+window.addEventListener("dragleave", e => { if (!e.relatedTarget) $("bar").classList.remove("drop"); }, true);
+window.addEventListener("drop", e => {
   $("bar").classList.remove("drop");
-  if (!e.dataTransfer.files.length) return;
-  e.preventDefault(); [...e.dataTransfer.files].forEach(addImageFile);
-});
+  const dt = e.dataTransfer;
+  if (!isFileDrag(dt) && !droppedPaths(dt).length) return;      // un simple texte glissé : comportement normal
+  e.preventDefault(); e.stopPropagation();
+  const files = [...dt.files].filter(f => f.size > 0);
+  const bad = files.filter(f => !/^image\//.test(f.type)).map(f => f.name);
+  if (files.length && files.length > bad.length) { files.forEach(addImageFile); }
+  else {
+    const paths = droppedPaths(dt);
+    if (paths.length) { send({t: "drop_paths", paths}); $("sub").textContent = "📎 je lis l'image…"; dbg("dépôt : chemins", paths); }
+    else if (!bad.length) showErr("rien d'exploitable dans ce dépôt (glisse une image)");
+  }
+  if (bad.length) showErr("pas une image : " + bad.join(", "));
+}, true);
 $("test").onclick = async () => {
   // simule une prise de parole : wav 16 kHz mono -> Float32 -> serveur (comme le VAD)
   const ab = await (await fetch("/tests/question16k.wav")).arrayBuffer();
