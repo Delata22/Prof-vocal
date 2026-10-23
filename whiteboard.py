@@ -258,6 +258,9 @@ class WhiteboardApp(Gtk.Application):
         view.connect("decide-policy", self.on_policy)
         view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or TITLE))
         view.connect("web-process-terminated", self.on_web_crash)
+        # diagnostic du glisser-déposer au niveau GTK (journal whiteboard.log), sans l'intercepter
+        view.connect("drag-drop", lambda w, ctx, x, y, t: (print(
+            f"{time.strftime('%T')} GTK drag-drop : cibles {[str(a) for a in ctx.list_targets()]}", file=sys.stderr, flush=True), False)[1])
         if os.environ.get("WHITEBOARD_NO_GPU") == "1":     # piste si les écrans noirs viennent du rendu GPU
             s.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.NEVER)
         view.load_uri(self.hub)

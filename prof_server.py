@@ -297,7 +297,9 @@ class Brain:
         allowed = [f"Bash(python3 {CAHIER}:*)", "Bash(python3 ~/.claude/cahier/cahier.py:*)", "Edit(./cards/**)",
                    # vocabulaire de la dictée et lexique de prononciation, que le prof complète en cours
                    # (~/.claude est protégé contre Edit : le lexique passe par pron.py)
-                   "Read(./vocab.txt)", "Edit(./vocab.txt)", f"Bash(python3 {HERE / 'pron.py'}:*)"]
+                   "Read(./vocab.txt)", "Edit(./vocab.txt)", f"Bash(python3 {HERE / 'pron.py'}:*)",
+                   # lire les fichiers du board (copies des photos / PDF que l'élève joint), jamais au-delà
+                   "Read(./**)"]
         args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--include-partial-messages",
                 "--setting-sources", "",                 # pas de hooks utilisateur (récap quotidien...)
@@ -559,6 +561,73 @@ class Prof:
         self.history.append(("élève", text))
         await self.state("thinking")
         await self.brain.ask(self.gen, msg, [(mt, b) for _p, mt, b in images])
+
+    PATH_START = re.compile(r"(?:file://)?(?:~/|/)")
+
+    async def attach_paths(self, text):
+        """Chemins de fichiers dans un message de l'élève (file:///…, /home/…, ~/…, entre guillemets ou non,
+        avec espaces) : chaque fichier qui existe est COPIÉ dans le board ; une image est jointe comme un collage,
+        un autre fichier (PDF, texte…) est signalé au prof par sa copie, qu'il peut lire. Le chemin d'origine est
+        remplacé dans le message transmis."""
+        import shutil, urllib.parse
+        out, k, found, pos = [], 0, 0, 0
+        while True:
+            m = self.PATH_START.search(text, pos)
+            if not m:
+                break
+            pos = m.start() + 1
+            if m.start() > 0 and not text[m.start() - 1].isspace() and text[m.start() - 1] not in "'\"«(:":
+                continue                        # « a/b » dans une phrase : pas un chemin
+            seg = text[m.start():].split("\n", 1)[0]
+            # le plus long préfixe (jusqu'à un espace ou une ponctuation de fin) qui est un fichier existant
+            cut = [i for i, ch in enumerate(seg) if ch in " \t\"'»)]>,;"] + [len(seg)]
+            hit = None
+            for c in sorted(set(cut), reverse=True):
+                raw = seg[:c].rstrip(".:!?")
+                p = urllib.parse.unquote(raw[7:]) if raw.startswith("file://") else raw
+                try:
+                    path = Path(p).expanduser().resolve()
+                    if path.is_file() and path.is_relative_to(Path.home()):
+                        hit = (c, raw, path)
+                        break
+                except (OSError, ValueError):
+                    continue
+            if not hit:
+                continue
+            c, raw, path = hit
+            out.append(text[k:m.start()].rstrip("'\"« ") + " ")
+            k = m.start() + len(raw)
+            if k < len(text) and text[k] in "'\"»":
+                k += 1
+            pos = k
+            found += 1
+            try:
+                if path.suffix.lower() in self.IMG_EXT:
+                    name, data = await asyncio.get_running_loop().run_in_executor(None, self.read_dropped, str(path))
+                    saved = await asyncio.get_running_loop().run_in_executor(None, self.save_image, data)
+                    self.pending_images.append(saved)
+                    self.pending_urls = getattr(self, "pending_urls", []) + ["/images/" + Path(saved[0]).name]
+                    out.append(f"[photo jointe ci-dessous : {path.name}]")
+                else:
+                    if path.stat().st_size > 50 * 1024 * 1024:
+                        raise ValueError(f"{path.name} : trop lourd (50 Mo max)")
+                    d = SESS / self.a.slug / "files"
+                    d.mkdir(parents=True, exist_ok=True)
+                    dest = d / path.name
+                    n = 2
+                    while dest.exists() and dest.read_bytes() != path.read_bytes():
+                        dest, n = d / f"{path.stem}-{n}{path.suffix}", n + 1
+                    shutil.copy2(path, dest)
+                    out.append(f"[fichier joint : {dest} (copie de {path.name}, tu peux le lire)]")
+                log(f"fichier du message joint : {path}")
+            except Exception as e:
+                log("fichier du message refusé :", e)
+                out.append(f"[fichier {path.name} : non joint ({e})]")
+                await self.send({"t": "error", "text": f"fichier non joint : {e}"})
+        if not found:
+            return text
+        out.append(text[k:])
+        return "".join(out).strip()
 
     def take_urls(self):
         urls, self.pending_urls = getattr(self, "pending_urls", []), []
@@ -944,8 +1013,9 @@ class Prof:
                     continue
                 t_stt = time.time()
                 prefix, shows = await self.take_selection()
+                sent = await self.attach_paths(text)
                 await self.send({"t": "user", "text": text, "shows": shows, "images": self.take_urls()})
-                await self.question(text, t0, t_stt, prefix)
+                await self.question(sent, t0, t_stt, prefix)
             elif msg.type == WSMsgType.TEXT:
                 j = json.loads(msg.data)
                 if j["t"] == "start" and not self.started:
@@ -965,8 +1035,11 @@ class Prof:
                     asyncio.create_task(self.answer_line(j["text"], j.get("last")))
                 elif j["t"] == "text":
                     prefix, shows = await self.take_selection()
+                    sent = await self.attach_paths(j["text"])          # chemins de fichiers dans le message
                     await self.send({"t": "user", "text": j["text"], "shows": shows, "images": self.take_urls()})
-                    await self.question(j["text"], prefix=prefix)
+                    await self.question(sent, prefix=prefix)
+                elif j["t"] == "dropdiag":         # diagnostic du glisser-déposer (ce que WebKit transmet)
+                    log("dépôt (diagnostic page) :", json.dumps(j.get("info"), ensure_ascii=False)[:600])
                 elif j["t"] == "audio":
                     next_sr, next_hdr = int(j.get("sr", 16000)), j
                     if j.get("mic"):
