@@ -153,7 +153,10 @@ let serverState = "listening";
 // ---------- lecture audio en file ----------
 const ctx = new (window.AudioContext || window.webkitAudioContext)();
 const out = ctx.createGain(); out.gain.value = new URLSearchParams(location.search).has("mute") ? 0 : 1; out.connect(ctx.destination);  // ?mute : tests automatiques sans son
-let queue = [], cur = null, playing = false, ducked = false;
+let queue = [], cur = null, playing = false, ducked = false, duckTimer = null;
+// pause « au cas où » pendant que le VAD décide si c'est une parole ; toujours levée, même si le VAD ne conclut jamais
+function duck() { ducked = true; ctx.suspend(); clearTimeout(duckTimer); duckTimer = setTimeout(() => { dbg("VAD : pas de conclusion, reprise"); unduck(); }, 2500); }
+function unduck() { clearTimeout(duckTimer); if (!ducked) return; ducked = false; if (!userPaused) { ctx.resume(); if (!playing) playNext(); } }
 let heard = [], userPaused = false, lastRewind = 0;   // phrases déjà commencées (réponse en cours + précédente), pause manuelle
 let tSpeechEnd = null, vadWait = 0;      // pour mesurer fin de parole -> 1er son
 function pcmBuffer(b64, sr) {
@@ -227,7 +230,7 @@ function setPaused(on) {
   userPaused = on;
   const textOnly = cur && !cur.buf;               // mode silencieux : la phrase en cours est un minuteur de lecture
   if (on) { ctx.suspend(); if (textOnly) cur.src.stop(); show("paused", "P pour reprendre"); }
-  else { ctx.resume(); if (playing) { if (textOnly) cur.src.start(); show(textOnly ? "reading" : "speaking"); } else playNext(); }
+  else { clearTimeout(duckTimer); ducked = false; ctx.resume(); if (playing) { if (textOnly) cur.src.start(); show(textOnly ? "reading" : "speaking"); } else playNext(); }
   $("pause").textContent = on ? "▶ Reprendre" : "⏸ Pause";
 }
 const busy = () => playing || queue.length > 0 || serverState === "thinking" || serverState === "transcribing";
@@ -345,7 +348,7 @@ const dbg = (...a) => console.log(`[prof ${(performance.now() / 1000).toFixed(1)
 function bargeIn() {
   if (!busy()) return;
   const last = cur ? cur.text : "";
-  stopAll(true); ducked = false; userPaused = false; $("pause").textContent = "⏸ Pause"; ctx.resume();
+  stopAll(true); clearTimeout(duckTimer); ducked = false; userPaused = false; $("pause").textContent = "⏸ Pause"; ctx.resume();
   gen = -1;                                          // ignore l'audio encore en vol
   send({t: "barge", last}); dbg("barge-in, dernière phrase :", last);
   addLine("tool", "(interrompu)"); pLine = null;
@@ -488,18 +491,19 @@ async function startVad() {
     onSpeechStart: () => {
       if (mode !== "auto" || muted) return;            // en mode espace le VAD ne décide de rien
       dbg("VAD : début de parole ?");
-      if (playing && !ducked && !userPaused) { ducked = true; ctx.suspend(); }   // pause tout de suite, peut-être un bruit
+      if (playing && !ducked && !userPaused) duck();   // pause tout de suite, peut-être un bruit
     },
-    onVADMisfire: () => { if (mode !== "auto") return; dbg("VAD : fausse alerte"); if (ducked) { ducked = false; if (!userPaused) ctx.resume(); } },
+    onVADMisfire: () => { unduck(); if (mode !== "auto") return; dbg("VAD : fausse alerte"); },
     onSpeechRealStart: () => {
-      if (mode !== "auto" || muted) return;
+      if (mode !== "auto" || muted) { unduck(); return; }
       dbg("VAD : parole confirmée"); speaking = true;
-      bargeIn(); if (ducked) { ducked = false; if (!userPaused) ctx.resume(); }
+      bargeIn(); unduck();
       show("recording", "tu parles… (Envoyer pour couper)");
       clearTimeout(autoTimer);
       autoTimer = setTimeout(() => { dbg(`VAD : ${MAX_AUTO_S} s sans fin de phrase, envoi forcé`); forceEnd(); }, MAX_AUTO_S * 1000);
     },
     onSpeechEnd: audio => {
+      unduck();
       if (mode !== "auto" || muted) { speaking = false; return; }
       speaking = false; clearTimeout(autoTimer);
       dbg("VAD : fin de parole");
@@ -518,6 +522,7 @@ function renderLat() { $("lat").textContent = [$("lat").dataset.l, $("lat").data
 
 async function setMode(m) {
   mode = m; try { localStorage.setItem("prof-mode", m); } catch (e) {}
+  unduck();
   $("mode").textContent = m === "espace" ? "Mode : espace" : "Mode : auto (VAD)";
   $("mode").title = m === "auto" ? "Mode auto : le micro reste ouvert en permanence (le VAD écoute)"
                                  : "Mode espace : le micro ne s'ouvre que pendant que tu parles";
@@ -846,6 +851,7 @@ $("mute").onclick = () => {
   muted = !muted; $("mute").textContent = muted ? "Micro : coupé" : "Micro : ouvert";
   if (muted && recording) stopRec(false);
   if (mode === "auto") { if (muted) { vadOff(); release(); } else vadOn(); }
+  if (muted) unduck();
   show(serverState === "done" ? "listening" : serverState);
 };
 document.addEventListener("keydown", e => {
