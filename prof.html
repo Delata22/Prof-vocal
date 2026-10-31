@@ -75,6 +75,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
 #calib .cref{font-size:28px;line-height:1.35;margin:10px 0;font-weight:500} #calib .cpass{color:var(--acc);margin:0}
 #calib .chint{color:var(--muted);margin:0} #calib .cheard{color:var(--muted);font-style:italic;min-height:1.5em;margin:0}
 #calib.rec{border-color:var(--red);background:color-mix(in srgb,var(--red) 10%,var(--card))} #calib .cfoot{display:flex;gap:8px;align-items:center} #cprog{margin-left:auto;color:var(--muted)}
+#soundbar{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:12;background:var(--think);color:#fff;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.3)}
 #micinfo{color:var(--muted);font-size:12px;max-width:260px;text-align:right}
 #settings{display:none;position:fixed;right:14px;bottom:calc(30vh + 8px);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;z-index:8;flex-direction:column;gap:10px;width:340px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 #settings.open{display:flex} #settings label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted)}
@@ -141,6 +142,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
   <button id="sample">Écouter un exemple</button>
   <button id="calibbtn" title="Lire 12 phrases (avec puis sans filtres) pour mesurer la reconnaissance vocale">🎙 Calibrer le micro</button>
 </div>
+<div id="soundbar" hidden>🔇 Le son du prof est en pause après le rechargement : clique n'importe où (ou appuie sur une touche) pour le réactiver.</div>
 <div id="cover"><button class="big" id="go">Démarrer le cours</button>
   <p>Un clic est nécessaire pour autoriser le micro et le son.<br><b>Espace</b> : un appui = j'enregistre (et le prof se tait), un 2e appui = j'envoie. Échap annule.<br>Le mode « auto » détecte seul la fin de tes phrases (moins fiable avec du bruit).</p></div>
 <script>
@@ -183,7 +185,13 @@ function playNext() {
   heard.push(it); pruneHeard();
   if (it.el) it.el.classList.remove("cut");
   markCur(it);
-  src.onended = () => { if (cur && cur.src === src) { playing = false; cur.el && cur.el.classList.remove("cur"); cur = null; playNext(); } };
+  src.onended = () => {
+    if (cur && cur.src === src) {
+      // accusé de lecture : le serveur garde la phrase en file jusque-là (renvoyée si la page plante)
+      send({t: "played", gen: it.gen, idx: it.idx});
+      playing = false; cur.el && cur.el.classList.remove("cur"); cur = null; playNext();
+    }
+  };
   src.start();
   // repères du prof (⟦mark …⟧) : exécutés quand la phrase commence à être jouée — à chaque fois, donc aussi
   // quand on la réécoute ; une phrase jamais jouée (interruption) n'exécute rien
@@ -304,16 +312,21 @@ function connect() {
     if (m.t === "sample") { playSample(m); return; }
     if (m.t === "silent") { setSilentUI(m.on); return; }
     if (m.t === "info") {
+      SLUG = m.slug;
       fillVoices(m.voices, m.voice); setSilentUI(!!m.silent);
       if (!$("board").src) $("board").src = `http://localhost:8777/s/${m.slug}`;
       document.title = `Prof · ${m.topic}`;
       $("log").innerHTML = ""; pLine = null;
       for (const [who, t] of m.history) who === "élève" ? (addLine("u", t), pLine = null) : proseSpan(t);
+      restoreAns();
+      // reprise après un plantage du rendu ou un rechargement (?resume=1) : pas d'écran « Démarrer le cours »
+      if (RESUME && !resumed && $("cover")) { resumed = true; dbg("reprise automatique"); $("go").click(); }
     } else if (m.t === "state") {
       serverState = m.s;
       if (!(playing && m.s === "listening") && !recording && !speaking && !userPaused) show(m.s);
     } else if (m.t === "gen") {
       gen = m.gen; pLine = null;
+      queue = queue.filter(q => q.gen === gen);      // une nouvelle réponse remplace la file de l'ancienne
     } else if (m.t === "user") {
       const d = addLine("u", m.text); pLine = null;
       if (m.shows) { const sp = document.createElement("span"); sp.className = "shows"; sp.textContent = ` (en montrant : ${m.shows})`; d.append(sp); }
@@ -539,9 +552,28 @@ let answerOpen = false;
 function openAnswer() {
   answerOpen = true; $("answer").classList.add("open");
   if (!$("alines").children.length) aAdd("");
-  dbg("panneau réponse ouvert");
+  dbg("panneau réponse ouvert"); saveAns();
 }
-function closeAnswer() { answerOpen = false; $("answer").classList.remove("open"); }
+function closeAnswer() { answerOpen = false; $("answer").classList.remove("open"); saveAns(); }
+// le panneau « Ta réponse » survit à un rechargement : lignes, pourquoi, ouvert ou non (par tableau)
+let SLUG = "", goStarted = false;
+const RESUME = new URLSearchParams(location.search).has("resume");
+let resumed = false;
+if (RESUME) history.replaceState(null, "", location.pathname + location.search.replace(/[?&]resume=1/, "").replace(/^&/, "?"));
+function saveAns() {
+  if (!SLUG) return;
+  const lines = aLines().map(r => ({l: r.querySelector("math-field").value, why: r.querySelector(".why").value}));
+  try { localStorage.setItem("prof-ans-" + SLUG, JSON.stringify({open: answerOpen, lines})); } catch (e) {}
+}
+function restoreAns() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem("prof-ans-" + SLUG) || "null"); } catch (e) {}
+  if (!st || !st.lines || (!st.open && !st.lines.some(l => l.l))) return;
+  $("alines").innerHTML = "";
+  for (const l of st.lines) { const r = aAdd(l.l || ""); r.classList.remove("flash"); r.querySelector(".why").value = l.why || ""; if (!l.l) break; }
+  if (st.open) openAnswer();
+}
+$("answer").addEventListener("input", () => saveAns());
 function aLines() { return [...$("alines").querySelectorAll(".aline")]; }
 function lastFilled() { return aLines().filter(r => r.querySelector("math-field").value.trim()).pop(); }
 function lastLatex() { const r = lastFilled(); return r ? r.querySelector("math-field").value : null; }
@@ -552,11 +584,12 @@ function aAdd(latex) {
   if (!row || row.querySelector("math-field").value.trim()) {
     row = document.createElement("div"); row.className = "aline";
     row.innerHTML = `<span class="num"></span><math-field math-virtual-keyboard-policy="manual"></math-field><input class="why" placeholder="parce que…"><button title="Supprimer la ligne">×</button>`;
-    row.querySelector("button").onclick = () => { row.remove(); renumber(); };
+    row.querySelector("button").onclick = () => { row.remove(); renumber(); saveAns(); };
     $("alines").append(row); renumber();
   }
   row.querySelector("math-field").value = latex;
   row.classList.remove("flash"); void row.offsetWidth; if (latex) row.classList.add("flash");
+  saveAns();
   return row;
 }
 function ansPending(on) { $("apending").textContent = on ? "conversion…" : ""; }
@@ -566,6 +599,7 @@ function onAns(m) {
   else if (m.op === "fix") { const r = lastFilled() || aAdd(""); r.querySelector("math-field").value = m.latex; r.classList.remove("flash"); void r.offsetWidth; r.classList.add("flash"); }
   else if (m.op === "why") { const r = lastFilled(); if (r) r.querySelector(".why").value = m.text; }
   else if (m.op === "submit") submitAnswer();
+  saveAns();
   if (m.text) $("apending").textContent = `« ${m.text} »`;
   else if (m.op === "none") $("apending").textContent = "rien compris : redicte la ligne (en entier, et attends une demi-seconde avant le 2e espace)";
 }
@@ -574,7 +608,7 @@ function submitAnswer() {
   if (!lines.length) { $("apending").textContent = "rien à envoyer"; return; }
   bargeIn();
   send({t: "answer", lines}); dbg("réponse envoyée", lines);
-  $("alines").innerHTML = ""; closeAnswer(); tSpeechEnd = performance.now(); vadWait = 0;
+  $("alines").innerHTML = ""; closeAnswer(); saveAns(); tSpeechEnd = performance.now(); vadWait = 0;
 }
 $("aadd").onclick = () => { const r = aAdd(""); r.querySelector("math-field").focus(); };
 $("asend").onclick = submitAnswer;
@@ -826,24 +860,45 @@ $("headset").onchange = async () => {
   await new Promise(r => setTimeout(r, 1200)); await reopen();
 };
 function casqueMsg(r) { if (!r.ok) showErr("casque : " + r.out); else dbg("casque :", r.out); }
+// Après un plantage du rendu, WebKit peut laisser l'audio « interrupted » : resume() ne rend alors jamais la main.
+// On n'attend pas plus de 0,8 s, et un bandeau propose de réactiver le son d'un clic (ou d'une touche).
+async function wakeAudio() {
+  try { await Promise.race([ctx.resume(), new Promise(r => setTimeout(r, 800))]); } catch (e) {}
+  const on = ctx.state === "running";
+  $("soundbar").hidden = on || silent;
+  return on;
+}
+function soundRetry() { ctx.resume().then(() => { $("soundbar").hidden = ctx.state === "running"; playNext(); }).catch(() => {}); }
+document.addEventListener("pointerdown", () => { if (ctx.state !== "running") soundRetry(); }, true);
+document.addEventListener("keydown", () => { if (ctx.state !== "running") soundRetry(); }, true);
+ctx.onstatechange = () => { if ($("soundbar")) $("soundbar").hidden = ctx.state === "running" || silent; };
 $("go").onclick = async () => {
-  await ctx.resume();
+  if (goStarted) return;
+  goStarted = true;
+  await wakeAudio();
+  // la séance démarre tout de suite ; le micro se prépare à côté (après un plantage, getUserMedia peut ne
+  // jamais rendre la main : on ne bloque ni l'écran ni la lecture des réponses)
+  if ($("cover")) $("cover").remove();
+  send({t: "start"});
+  const timeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("délai dépassé")), ms))]);
   if ($("headset").checked) {
-    $("go").textContent = "Casque en mode appel…";
     const r = await headset("appel"); casqueMsg(r);
     await new Promise(r => setTimeout(r, 1200));           // la source bluez_input.* met ~1 s à apparaître
   }
   try {
-    await acquire();                 // autorisation du micro (et les noms des micros pour la liste)
+    await timeout(acquire(), 8000);  // autorisation du micro (et les noms des micros pour la liste)
     micReady = true;
     await pickDefaultMic();
     release();                       // on ne garde rien d'ouvert : chaque appui sur espace rouvre le micro
     await refreshDevices();
-    await startRecorder();
+    await timeout(startRecorder(), 8000);
     await setMode(mode);
-  } catch (e) { console.error(e); micErr = "micro indisponible (" + e.name + ") : écris tes questions"; $("mute").textContent = "Micro : absent"; show("listening"); }
-  $("cover").remove();
-  send({t: "start"});
+    micErr = ""; show(serverState === "done" ? "listening" : serverState);
+  } catch (e) {
+    console.error(e); release();
+    micErr = "micro indisponible (" + (e.name === "Error" ? e.message : e.name) + ") : écris tes questions, ou F5";
+    $("mute").textContent = "Micro : absent"; show("listening");
+  }
 };
 $("mode").onclick = () => setMode(mode === "espace" ? "auto" : "espace");
 $("send").onclick = () => mode === "espace" ? (recording ? stopRec(true) : startRec()) : forceEnd();

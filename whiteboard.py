@@ -222,7 +222,7 @@ class WhiteboardApp(Gtk.Application):
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, sig, lambda *_: (self.quit(), False)[1])
         for name, cb, accels in [
-            ("reload", lambda *_: self.view.reload(), ["<Primary>r", "F5"]),
+            ("reload", lambda *_: self.reload_resume(self.view), ["<Primary>r", "F5"]),
             ("home", lambda *_: self.view.load_uri(self.hub + "?stop=1"), ["<Primary>h"]),   # arrête le prof du tableau
             ("quit", lambda *_: self.quit(), ["<Primary>q"]),
             ("fullscreen", self.toggle_fullscreen, ["F11"]),
@@ -263,7 +263,9 @@ class WhiteboardApp(Gtk.Application):
         # qui l'envoie au serveur ({t: "drop_paths"}) comme un chemin collé.
         view.connect("drag-drop", self.on_drag_drop)
         view.connect("drag-data-received", self.on_drag_data)
-        if os.environ.get("WHITEBOARD_NO_GPU") == "1":     # piste si les écrans noirs viennent du rendu GPU
+        # Rendu logiciel par défaut : les plantages du rendu (« crashed », ~0,3 s après un add/show au tableau)
+        # pointent vers le compositing GPU de WebKitGTK (PC hybride Intel + NVIDIA). WHITEBOARD_GPU=1 pour le réactiver.
+        if os.environ.get("WHITEBOARD_GPU") != "1":
             s.set_hardware_acceleration_policy(WebKit2.HardwareAccelerationPolicy.NEVER)
         view.load_uri(self.hub)
         window.add(view)
@@ -313,8 +315,10 @@ class WhiteboardApp(Gtk.Application):
         if PROF.log and PROF.log.exists():          # dernières commandes du tableau, pour retrouver la carte en cause
             lines = [l for l in PROF.log.read_text(errors="replace").splitlines() if "outil" in l or "repère" in l]
             last = " | ".join(l.strip()[:160] for l in lines[-3:])
-        line = (f"{time.strftime('%F %T')} rendu WebKit terminé : {name} ; page {view.get_uri()} ; "
+        gpu = "GPU" if os.environ.get("WHITEBOARD_GPU") == "1" else "rendu logiciel"
+        line = (f"{time.strftime('%F %T')} rendu WebKit terminé : {name} ({gpu}) ; page {view.get_uri()} ; "
                 f"board {PROF.slug} ; dernières commandes : {last}")
+        GLib.timeout_add_seconds(5, self.log_crash_report)   # apport écrit son rapport quelques secondes après
         print(line, file=sys.stderr, flush=True)
         try:
             STATE.mkdir(parents=True, exist_ok=True)
@@ -322,14 +326,40 @@ class WhiteboardApp(Gtk.Application):
                 f.write(line + "\n")
         except OSError:
             pass
+        uri = view.get_uri()                        # après le plantage, la vue repasse vite à about:blank
         if len(self.crashes) <= 3:
-            GLib.timeout_add(500, lambda: (view.reload(), False)[1])
+            GLib.timeout_add(500, lambda: (self.reload_resume(view, uri), False)[1])
         else:
             view.load_html(f"""<body style="font:16px system-ui;padding:40px;background:#1b1b1a;color:#ecebe6">
               <h2>L'affichage a planté {len(self.crashes)} fois en une minute ({name}).</h2>
               <p>Le motif est noté dans {STATE / 'crashes.log'}.</p>
               <p><a style="color:#85B7EB" href="{self.hub}">Revenir à l'accueil</a> · ou F5 pour recharger.</p></body>""", self.hub)
         return True
+
+    def reload_resume(self, view, uri=None):
+        """Recharge la page du Prof en reprenant la séance là où elle en était (?resume=1 : pas d'écran
+        « Démarrer le cours » ; le serveur renvoie les phrases pas encore jouées)."""
+        uri = uri or view.get_uri() or self.hub
+        if uri.startswith("about:"):
+            uri = self.hub
+        if uri.startswith(f"http://127.0.0.1:{PROF_PORT}/") and "resume=1" not in uri:
+            uri += ("&" if "?" in uri else "?") + "resume=1"
+        view.load_uri(uri)
+
+    def log_crash_report(self):
+        """Signal du plantage, s'il y a un rapport apport récent (/var/crash) du processus de rendu."""
+        try:
+            reps = sorted(Path("/var/crash").glob("*WebKitWebProcess*.crash"), key=lambda f: f.stat().st_mtime)
+            if reps and time.time() - reps[-1].stat().st_mtime < 120:
+                head = reps[-1].read_text(errors="replace")[:20000]
+                sig = re.search(r"^Signal: *(\S+)", head, re.M)
+                title = re.search(r"^(?:Title|CrashCounter|ExecutablePath): *(.*)$", head, re.M)
+                with open(STATE / "crashes.log", "a") as f:
+                    f.write(f"    rapport apport {reps[-1].name} : signal {sig.group(1) if sig else '?'}"
+                            f"{' ; ' + title.group(1) if title else ''}\n")
+        except OSError:
+            pass
+        return False
 
     def on_permission(self, view, request):
         # micro et caméra : seulement pour nos pages locales ; le reste (géolocalisation, notifications…) refusé
@@ -408,6 +438,16 @@ def log_to_file() -> None:
 
 def main() -> int:
     set_process_name("whiteboard")
+    # diagnostic des plantages du rendu : les processus WebKit héritent de cette limite ; apport peut alors
+    # écrire un rapport (/var/crash, avec le signal). WHITEBOARD_DEBUG=1 : journal WebKit (processus, compositing).
+    try:
+        import resource
+        _soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        resource.setrlimit(resource.RLIMIT_CORE, (hard, hard))
+    except (ImportError, ValueError, OSError):
+        pass
+    if os.environ.get("WHITEBOARD_DEBUG") == "1":
+        os.environ.setdefault("WEBKIT_DEBUG", "Process,Loading,Compositing,Layers")
     if not sys.stderr.isatty():         # lancé depuis le menu : pas de terminal pour voir les erreurs
         log_to_file()
     return WhiteboardApp().run([WM_CLASS, *sys.argv[1:]])

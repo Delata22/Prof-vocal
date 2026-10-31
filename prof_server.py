@@ -521,6 +521,7 @@ class Prof:
         self.conv = Converter(a.conv_model, a.topic)
         self.gen_text = ""
         self.cues = []
+        self.outbox, self.gen_done = [], False   # phrases envoyées, pas encore jouées par la page
         self.silent = bool(self.brain.meta.get("silent"))
         self.pending_images = []        # [(chemin, media_type, base64)] à joindre au prochain message   # mode silencieux, mémorisé par board
         self.mode_notice = ""                  # repères en attente d'une phrase
@@ -542,6 +543,7 @@ class Prof:
             await self.brain.interrupt()
         self.gen += 1
         self.buf, self.idx, self.gen_text, self.cues = "", 0, "", []
+        self.outbox, self.gen_done = [], False
         self.t = {"t0": t0 or time.time(), "stt": t_stt or time.time()}
         await self.send({"t": "gen", "gen": self.gen})
         msg = prefix + text
@@ -914,13 +916,13 @@ class Prof:
                 continue
             if idx is None:
                 if cues:                    # repères restés sans phrase après eux : un silence qui les porte
-                    await self.send({"t": "say", "gen": gen, "idx": -1, "text": "", "sr": 16000, "cues": cues,
-                                     "pcm": base64.b64encode(b"\0\0" * 800).decode()})
+                    await self.say_out({"t": "say", "gen": gen, "idx": -1, "text": "", "sr": 16000, "cues": cues,
+                                        "pcm": base64.b64encode(b"\0\0" * 800).decode()})
+                self.gen_done = True
                 await self.send({"t": "done", "gen": gen})
                 continue
             if self.silent:                 # mode silencieux : ni synthèse ni son, la page affiche au rythme de lecture
-                self.history.append(("prof", text))
-                await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "cues": cues, "silent": True})
+                await self.say_out({"t": "say", "gen": gen, "idx": idx, "text": text, "cues": cues, "silent": True})
                 continue
             t = time.time()
             pcm, sr = await loop.run_in_executor(None, self.voice.pcm, text)
@@ -932,9 +934,25 @@ class Prof:
                 log(f"latence serveur : stt {tt['stt'] - tt['t0']:.2f} s | 1er mot Claude "
                     f"{tt.get('first_text', 0) - tt['stt']:.2f} s | 1re phrase synthétisée "
                     f"{tt['first_audio'] - tt['t0']:.2f} s après réception (piper {time.time() - t:.2f} s)")
-            self.history.append(("prof", text))
-            await self.send({"t": "say", "gen": gen, "idx": idx, "text": text, "sr": sr, "cues": cues,
-                             "pcm": base64.b64encode(pcm).decode()})
+            await self.say_out({"t": "say", "gen": gen, "idx": idx, "text": text, "sr": sr, "cues": cues,
+                                "pcm": base64.b64encode(pcm).decode()})
+
+    async def say_out(self, msg):
+        """Envoie une phrase à la page et la garde en file jusqu'à l'accusé de lecture ({t: played}) : si la page
+        plante ou se recharge, elle la reçoit de nouveau à la reconnexion (la génération, elle, continue)."""
+        if msg["gen"] == self.gen:
+            self.outbox.append(msg)
+        await self.send(msg)
+
+    def played(self, gen, idx):
+        """La page a fini de jouer (ou d'afficher) cette phrase : elle sort de la file et entre dans l'historique."""
+        for k, m in enumerate(self.outbox):
+            if m["gen"] == gen and m["idx"] == idx:
+                for done in self.outbox[:k + 1]:            # celles d'avant aussi (jouées dans l'ordre)
+                    if done["text"]:
+                        self.history.append(("prof", done["text"]))
+                del self.outbox[:k + 1]
+                return
 
     def keep_audio(self, audio, text, raw=None, sr=16000):
         """Garde chaque segment + sa transcription (corpus pour un futur fine-tuning de Whisper sur sa voix)."""
@@ -977,7 +995,18 @@ class Prof:
                          "silent": self.silent})
         next_sr = 16000          # taux du prochain segment binaire (annoncé par {t: audio, sr})
         next_hdr = {}            # en-tête complet ({target: "answer", last: ...} pour le panneau « Ta réponse »)
-        await self.state("listening")
+        if self.outbox or self.brain.busy:
+            # reconnexion (plantage du rendu, rechargement) en pleine réponse : on reprend où la page s'était arrêtée
+            log(f"reprise : {len(self.outbox)} phrase(s) pas encore jouée(s) renvoyée(s)"
+                + (", le prof écrit encore" if self.brain.busy else ""))
+            await self.send({"t": "gen", "gen": self.gen})
+            for m in list(self.outbox):
+                await self.send(m)
+            if self.gen_done:
+                await self.send({"t": "done", "gen": self.gen})
+            await self.state("thinking" if self.brain.busy and not self.outbox else "listening")
+        else:
+            await self.state("listening")
         loop = asyncio.get_running_loop()
         async for msg in ws:
             if msg.type == WSMsgType.BINARY:
@@ -1028,6 +1057,7 @@ class Prof:
                     self.interrupted = {"last": j.get("last") or ""}
                     log("interruption ; dernière phrase entendue :", repr(j.get("last")))
                     self.gen += 1      # ignore tout ce qui arrive encore de l'ancienne génération
+                    self.outbox = []
                     await self.brain.interrupt()
                 elif j["t"] == "answer":
                     await self.submit_answer(j.get("lines", []))
@@ -1058,6 +1088,7 @@ class Prof:
                     # test : un tour du prof simulé, découpé en petits morceaux comme le streaming de Claude
                     self.gen += 1
                     self.buf, self.idx, self.gen_text, self.cues = "", 0, "", []
+                    self.outbox, self.gen_done = [], False
                     self.t = {"t0": time.time(), "stt": time.time()}
                     await self.send({"t": "gen", "gen": self.gen})
                     txt, n = j["text"], int(j.get("chunk", 7))
@@ -1098,6 +1129,8 @@ class Prof:
                                             "[Mode voix : l'élève t'entend de nouveau et peut parler.]")
                         log("mode silencieux" if on else "mode voix")
                     await self.send({"t": "silent", "on": self.silent})
+                elif j["t"] == "played":
+                    self.played(j.get("gen"), j.get("idx"))
                 elif j["t"] == "cue":            # la page commence à JOUER une phrase : on exécute ses repères
                     log(f"phrase {j.get('idx')} jouée par la page, repères : {j.get('cues')}")
                     asyncio.create_task(self.run_cues(j.get("cues", []), j.get("idx")))
