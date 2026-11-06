@@ -292,29 +292,29 @@ class Brain:
     async def start(self):
         system = (HERE / "prompt.md").read_text().replace("{slug}", self.slug).replace("{topic}", self.topic) \
             .replace("{pron}", f"python3 {HERE / 'pron.py'}")
-        # Bash limité au CLI du cahier ; Write limité à ./cards/ (le contenu des cartes, LaTeX compris :
-        # un heredoc avec des « \ » ou des « * » est refusé par le filtre de permissions).
+        # Un Claude Code complet (décision de l'élève, 2026-11-06 : « toutes les perms classiques d'un Claude normal ») :
+        # tous les outils standard, tout le dossier personnel, sa config utilisateur (CLAUDE.md, mémoire, hooks).
+        # Permissions « classiques » : mode auto (le classifieur laisse passer le sûr) ; ce qui reste à décider
+        # arrive au serveur (--permission-prompt-tool stdio, control_request can_use_tool) et l'élève répond
+        # dans la page (Autoriser / Refuser / Toujours pour cette séance). Jamais bypassPermissions.
+        # Le cahier, la prononciation et ses cartes restent pré-autorisés (le tableau ne doit jamais attendre).
         allowed = [f"Bash(python3 {CAHIER}:*)", "Bash(python3 ~/.claude/cahier/cahier.py:*)", "Edit(./cards/**)",
-                   # vocabulaire de la dictée et lexique de prononciation, que le prof complète en cours
-                   # (~/.claude est protégé contre Edit : le lexique passe par pron.py)
                    "Read(./vocab.txt)", "Edit(./vocab.txt)", f"Bash(python3 {HERE / 'pron.py'}:*)",
-                   # lecture sans restriction de chemin (décision de l'élève, 2026-10-23 : « les mêmes perms de
-                   # lecture qu'un Claude ») : il ouvre directement les fichiers cités ; l'écriture reste limitée
                    "Read", "Glob", "Grep"]
         args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--include-partial-messages",
-                "--setting-sources", "",                 # pas de hooks utilisateur (récap quotidien...)
+                "--setting-sources", "user",            # ses instructions globales, sa mémoire, ses hooks
                 "--model", self.model, "--effort", self.effort,
-                # pas d'auto-mémoire (elle autorise des écritures dans ~/.claude/projects/…/memory) ;
-                # deny explicite sur ~/.claude, au cas où
-                "--settings", json.dumps({"autoMemoryEnabled": False, "permissions": {"deny": [
-                    "Edit(~/.claude/**)", f"Edit(/{Path.home()}/.claude/**)"]}}),
-                "--tools", "Bash,Write,Read,Edit,Glob,Grep", "--allowedTools", *allowed, "--permission-mode", "dontAsk",
+                "--add-dir", str(Path.home()),
+                "--allowedTools", *allowed,
+                "--permission-mode", os.environ.get("PROF_PERMISSION_MODE", "auto"),
+                "--permission-prompt-tool", "stdio",
                 "--append-system-prompt", system]
         if self.meta.get("session_id"):
             args += ["--resume", self.meta["session_id"]]
-        env = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
+        env = dict(os.environ)
         env.pop("LD_LIBRARY_PATH", None)
+        env.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
         self.proc = await asyncio.create_subprocess_exec(
             *args, cwd=self.dir, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024)
@@ -337,6 +337,15 @@ class Brain:
             {"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}} for mt, b64 in images
         ] if images else text
         await self._send({"type": "user", "message": {"role": "user", "content": content}})
+
+    async def answer_permission(self, request_id, allow, input_=None, permissions=None, message=""):
+        """Réponse à une demande d'autorisation (control_request can_use_tool)."""
+        resp = ({"behavior": "allow", "updatedInput": input_ or {}} if allow
+                else {"behavior": "deny", "message": message or "Refusé par l'élève."})
+        if allow and permissions:
+            resp["updatedPermissions"] = permissions
+        await self._send({"type": "control_response",
+                          "response": {"subtype": "success", "request_id": request_id, "response": resp}})
 
     async def interrupt(self):
         if self.pending:
@@ -400,6 +409,8 @@ class Brain:
                         out = c.get("content")
                         out = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
                         await self.on_event("tool_result", gen, out[:300])
+            elif ty == "control_request" and j.get("request", {}).get("subtype") == "can_use_tool":
+                await self.on_event("permission", gen, j)
             elif ty == "result":
                 if self.pending:
                     self.pending.pop(0)
@@ -522,6 +533,8 @@ class Prof:
         self.gen_text = ""
         self.cues = []
         self.outbox, self.gen_done = [], False   # phrases envoyées, pas encore jouées par la page
+        self.perms = {}                           # demandes d'autorisation en attente : id -> (requête, message page)
+        self.perm_always = set()                  # « toujours pour cette séance »
         self.silent = bool(self.brain.meta.get("silent"))
         self.pending_images = []        # [(chemin, media_type, base64)] à joindre au prochain message   # mode silencieux, mémorisé par board
         self.mode_notice = ""                  # repères en attente d'une phrase
@@ -539,6 +552,7 @@ class Prof:
 
     # --- nouvelle question ---
     async def question(self, text, t0=None, t_stt=None, prefix=""):
+        await self.deny_pending_perms("L'élève est passé à autre chose (nouvelle question).")
         if self.brain.busy:
             await self.brain.interrupt()
         self.gen += 1
@@ -857,8 +871,69 @@ class Prof:
         await self.question(msg)
         self.history[-1] = ("élève", "réponse écrite " + cid)
 
+    # --- autorisations (le prof veut lancer une commande, écrire un fichier…) ---
+    @staticmethod
+    def perm_key(req):
+        """Clé de « toujours pour cette séance » : l'outil, et pour Bash le premier mot de la commande."""
+        tool, inp = req.get("tool_name", ""), req.get("input", {}) or {}
+        if tool == "Bash":
+            return "Bash:" + ((inp.get("command") or "").strip().split() or [""])[0]
+        return tool
+
+    @staticmethod
+    def perm_text(req):
+        tool, inp = req.get("tool_name", ""), req.get("input", {}) or {}
+        if tool == "Bash":
+            return "lancer une commande", inp.get("command", "")
+        if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+            verb = "écrire" if tool == "Write" else "modifier"
+            return f"{verb} un fichier", inp.get("file_path") or inp.get("notebook_path", "")
+        if tool in ("WebFetch", "WebSearch"):
+            return "aller sur le web", inp.get("url") or inp.get("query", "")
+        return f"utiliser {req.get('display_name') or tool}", json.dumps(inp, ensure_ascii=False)[:400]
+
+    async def on_permission(self, gen, j):
+        req, rid = j["request"], j["request_id"]
+        if gen is not None and gen != self.gen:
+            return await self.brain.answer_permission(rid, False, message="Réponse abandonnée (l'élève est passé à autre chose).")
+        key = self.perm_key(req)
+        if key in self.perm_always:
+            log(f"autorisation (toujours pour la séance) : {key}")
+            return await self.brain.answer_permission(rid, True, req.get("input"))
+        what, detail = self.perm_text(req)
+        msg = {"t": "perm", "id": rid, "what": what, "detail": detail, "tool": req.get("tool_name"),
+               "why": req.get("description") or "", "key": key}
+        self.perms[rid] = (req, msg)
+        log(f"demande d'autorisation : {what} : {detail[:200]}")
+        await self.send(msg)
+        await self.queue_say(gen if gen is not None else self.gen, "J'ai besoin de ton accord à l'écran.")
+
+    async def perm_answer(self, rid, choice):
+        if rid not in self.perms:
+            return
+        req, _msg = self.perms.pop(rid)
+        allow = choice in ("allow", "always")
+        perms = None
+        if choice == "always":
+            self.perm_always.add(self.perm_key(req))
+            # seulement des règles pour cet outil : jamais les suggestions « changer de mode » (acceptEdits ouvrait
+            # aussi rm et compagnie pour toute la séance)
+            perms = [p for p in req.get("permission_suggestions") or []
+                     if p.get("destination") == "session" and p.get("type") == "addRules"] or None
+        log(f"autorisation {'accordée' if allow else 'refusée'} ({choice}) : {self.perm_text(req)[1][:160]}")
+        await self.brain.answer_permission(rid, allow, req.get("input"), perms)
+        await self.send({"t": "perm_done", "id": rid})
+
+    async def deny_pending_perms(self, why):
+        for rid in list(self.perms):
+            self.perms.pop(rid)
+            await self.brain.answer_permission(rid, False, message=why)
+            await self.send({"t": "perm_done", "id": rid})
+
     # --- événements du cerveau ---
     async def on_brain(self, kind, gen, data):
+        if kind == "permission":
+            return await self.on_permission(gen, data)
         if gen != self.gen:
             return                    # vieille génération (interrompue) : on ignore
         if kind == "text":
@@ -880,12 +955,14 @@ class Prof:
             sents, self.buf = cut_sentences(self.buf, flush=True)
             for s in sents:
                 await self.queue_say(gen, s)
-            await self.send({"t": "tool", "text": "je note…" if data in ("Read", "Edit") else "j'écris au tableau…"})
+            await self.send({"t": "tool", "text": {"Read": "je lis…", "Glob": "je cherche…", "Grep": "je cherche…",
+                                                   "Edit": "je modifie…", "Write": "j'écris…", "WebFetch": "je consulte le web…",
+                                                   "WebSearch": "je cherche sur le web…"}.get(data, "j'agis…")})
         elif kind == "tool":
             m = re.search(r"(?:cahier|pron)\.py\s+(\w+)\s*(.*)", data)
-            short = f"{m.group(1)} {m.group(2).splitlines()[0][:80]}" if m else data[:100]
+            short = f"{m.group(1)} {m.group(2).splitlines()[0][:80]}" if m else data.splitlines()[0][:100] if data else ""
             log("outil :", short)
-            await self.send({"t": "tool", "text": "tableau : " + short})
+            await self.send({"t": "tool", "text": ("tableau : " if m else "ordinateur : ") + short})
         elif kind == "tool_result":
             log("  ->", data.replace("\n", " ")[:160])
         elif kind == "result":
@@ -995,6 +1072,8 @@ class Prof:
                          "silent": self.silent})
         next_sr = 16000          # taux du prochain segment binaire (annoncé par {t: audio, sr})
         next_hdr = {}            # en-tête complet ({target: "answer", last: ...} pour le panneau « Ta réponse »)
+        for _req, pm in self.perms.values():      # demandes d'autorisation encore en attente
+            await self.send(pm)
         if self.outbox or self.brain.busy:
             # reconnexion (plantage du rendu, rechargement) en pleine réponse : on reprend où la page s'était arrêtée
             log(f"reprise : {len(self.outbox)} phrase(s) pas encore jouée(s) renvoyée(s)"
@@ -1056,6 +1135,7 @@ class Prof:
                     # l'élève parle : on coupe la génération en cours (l'audio est déjà coupé côté page)
                     self.interrupted = {"last": j.get("last") or ""}
                     log("interruption ; dernière phrase entendue :", repr(j.get("last")))
+                    await self.deny_pending_perms("L'élève t'a coupé la parole.")
                     self.gen += 1      # ignore tout ce qui arrive encore de l'ancienne génération
                     self.outbox = []
                     await self.brain.interrupt()
@@ -1129,6 +1209,8 @@ class Prof:
                                             "[Mode voix : l'élève t'entend de nouveau et peut parler.]")
                         log("mode silencieux" if on else "mode voix")
                     await self.send({"t": "silent", "on": self.silent})
+                elif j["t"] == "perm_answer":
+                    await self.perm_answer(j.get("id"), j.get("choice"))
                 elif j["t"] == "played":
                     self.played(j.get("gen"), j.get("idx"))
                 elif j["t"] == "cue":            # la page commence à JOUER une phrase : on exécute ses repères
