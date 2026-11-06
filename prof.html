@@ -6,7 +6,6 @@
 <title>Prof vocal</title>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.29/dist/bundle.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/mathlive@0.109.2/mathlive.min.js"></script>
 <style>
 :root{--bg:#f6f5f1;--card:#fff;--fg:#1f1e1c;--muted:#6d6b65;--line:#e2e0d8;--acc:#185FA5;--listen:#1D9E75;--think:#BA7517;--speak:#185FA5;--red:#E24B4A}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#262624;--fg:#ecebe6;--muted:#a3a19a;--line:#3a3936;--acc:#85B7EB;--listen:#5DCAA5;--think:#EF9F27;--speak:#85B7EB}}
@@ -57,18 +56,6 @@ body.silent #side button{font-size:12px;padding:3px 8px}
 #log .u img{height:56px;border-radius:6px;margin:4px 6px 0 0;border:1px solid var(--line);cursor:zoom-in;vertical-align:top}
 #log .u img.big{height:auto;max-width:100%;cursor:zoom-out}
 #log .err{color:var(--red);font-size:13px}
-#answer{display:none;position:fixed;left:14px;right:300px;bottom:calc(30vh + 8px);max-height:55vh;overflow:auto;background:var(--card);border:2px solid var(--acc);border-radius:12px;padding:10px 14px;z-index:7;flex-direction:column;gap:8px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
-#answer.open{display:flex}
-#answer .ahead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap} #answer .hint{color:var(--muted);font-size:12px;flex:1}
-#apending{color:var(--acc);font-size:13px}
-#answer .aline{display:grid;grid-template-columns:24px minmax(0,1.6fr) minmax(0,1fr) 28px;gap:8px;align-items:center;border-radius:8px;padding:2px}
-#answer .aline.flash{animation:flash 1.2s} @keyframes flash{0%{background:color-mix(in srgb,var(--acc) 30%,transparent)}100%{background:transparent}}
-#alive{display:none;grid-template-columns:24px minmax(0,1.6fr) minmax(0,1fr);gap:8px;align-items:center;border:1px dashed var(--acc);border-radius:8px;padding:4px}
-#alive.on{display:grid} #alive .pt{color:var(--muted);font-size:13px;font-style:italic} #alive math-field{opacity:.75;pointer-events:none}
-#answer .num{color:var(--muted);text-align:right}
-#answer math-field{font-size:22px;border:1px solid var(--line);border-radius:7px;padding:2px 6px;background:var(--bg);color:var(--fg);--caret-color:var(--acc)}
-#answer .why,#atext{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg)}
-#answer .afoot{display:flex;gap:8px;align-items:center} #atext{flex:1}
 button.primary{background:var(--acc);color:#fff;border:0}
 #calib{display:none;position:fixed;inset:12% 14% auto 14%;background:var(--card);border:2px solid var(--red);border-radius:14px;padding:16px 22px;z-index:11;flex-direction:column;gap:6px;box-shadow:0 8px 32px rgba(0,0,0,.35)}
 #calib.open{display:flex} #calib .chead{display:flex;gap:10px;align-items:baseline} #calib .chead span{flex:1;color:var(--muted);font-size:13px}
@@ -108,8 +95,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
 </div>
     <button id="silentbtn" title="Touche S : pas de voix, pas de micro ; tu lis et tu écris">🔊 Voix (S)</button>
     <div style="display:flex;gap:6px"><button id="rew" title="Flèche gauche : reprendre la phrase ; 2 appuis rapides : la précédente">⏮ Phrase</button>
-    <button id="pause" title="Touche P">⏸ Pause</button>
-    <button id="answerbtn" title="Touche R">✎ Ta réponse (R)</button></div>
+    <button id="pause" title="Touche P">⏸ Pause</button></div>
     <span id="micinfo"></span>
     <span id="lat"></span>
   </div>
@@ -120,16 +106,6 @@ button.primary{background:var(--acc);color:#fff;border:0}
       <button id="bigsend" class="primary">Envoyer</button></div>
   </div>
   <input type="file" id="filepick" accept="image/*" multiple hidden>
-</div>
-<div id="answer">
-  <div class="ahead"><b>Ta réponse</b>
-    <span class="hint">espace : dicter une ligne · « parce que … » · « corrige : … » · « j'envoie » · Ctrl+Entrée envoie · Échap ferme</span>
-    <span id="apending"></span><button id="aclose" title="Échap">×</button></div>
-  <div id="alines"></div>
-  <div id="alive"><span class="num">…</span><math-field read-only></math-field><span class="pt"></span></div>
-  <div class="afoot"><button id="aadd">+ ligne</button>
-    <input id="atext" placeholder="ou tape la ligne en français + Entrée">
-    <button id="asend" class="primary">Envoyer au prof</button></div>
 </div>
 <div id="calib">
   <div class="chead"><b>Calibrer le micro</b> <span id="cinfo"></span><button id="cclose" title="Échap">×</button></div>
@@ -309,15 +285,8 @@ function connect() {
     if (m.t === "perm") { showPerm(m); return; }
     if (m.t === "perm_done") { const b = document.getElementById("perm-" + m.id); if (b) b.remove(); return; }
     if (m.t === "headset") { if (headsetWait) { headsetWait(m); headsetWait = null; } return; }
-    if (m.t === "ans") { liveHide(); onAns(m); return; }
     if (m.t === "dropped") { pendingImgs.push({data: m.data, name: m.name}); renderThumbs(); if (silent) $("bigtxt").focus(); return; }
     if (m.t === "drop_error") { showErr(m.text); return; }
-    if (m.t === "partial") {
-      if (!m.latex) partialBusy = false;
-      if (recording && answerOpen) liveShow(m.text, m.latex);
-      return;
-    }
-    if (m.t === "open_answer") { openAnswer(); return; }
     if (m.t === "sample") { playSample(m); return; }
     if (m.t === "silent") { setSilentUI(m.on); return; }
     if (m.t === "info") {
@@ -327,7 +296,6 @@ function connect() {
       document.title = `Prof · ${m.topic}`;
       $("log").innerHTML = ""; pLine = null;
       for (const [who, t] of m.history) who === "élève" ? (addLine("u", t), pLine = null) : proseSpan(t);
-      restoreAns();
       // reprise après un plantage du rendu ou un rechargement (?resume=1) : pas d'écran « Démarrer le cours »
       if (RESUME && !resumed && $("cover")) { resumed = true; dbg("reprise automatique"); $("go").click(); }
     } else if (m.t === "state") {
@@ -353,7 +321,7 @@ function connect() {
       if (!playing) show("thinking", m.text);
     } else if (m.t === "done") {
       if (m.gen === gen) { serverState = "done"; if (!playing && !queue.length) show("listening"); }
-      if (silent && !answerOpen && !["INPUT", "TEXTAREA", "MATH-FIELD"].includes(document.activeElement.tagName)) $("bigtxt").focus();
+      if (silent && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) $("bigtxt").focus();
     }
   };
 }
@@ -379,9 +347,8 @@ function sendSegment(f32, why, sr = 16000) {
   const sec = f32.length / sr;
   if (sec < 0.3) { dbg("segment trop court, ignoré", sec); show("listening"); return; }
   if (!ws || ws.readyState !== 1) { dbg("segment PERDU : websocket fermée", ws && ws.readyState); show("listening", "segment perdu : connexion au serveur coupée"); return; }
-  if (!answerOpen) flushImages();                     // photos jointes : avec cette question parlée
+  flushImages();                                       // photos jointes : avec cette question parlée
   const hdr = {t: "audio", sr, mic: micLabel()};       // annonce le taux (et la destination) du segment qui suit
-  if (answerOpen) { hdr.target = "answer"; hdr.last = lastLatex(); ansPending(true); }
   ws.send(JSON.stringify(hdr));
   ws.send(f32.buffer.slice(f32.byteOffset, f32.byteOffset + f32.byteLength));
   dbg(`segment envoyé (${why}) : ${sec.toFixed(1)} s à ${sr} Hz`);
@@ -427,24 +394,6 @@ function connectRecorder() {
   if (capSrc) { capSrc.disconnect(); capSrc = null; }
   if (stream && rec) { capSrc = rec.createMediaStreamSource(stream); capSrc.connect(capNode); }
 }
-// ---------- aperçu en direct de la ligne dictée ----------
-let liveTimer = null, partialBusy = false, partialT = 0;
-function liveShow(text, latex) {
-  $("alive").classList.add("on");
-  $("alive").querySelector(".pt").textContent = text ? `« ${text} »` : "j'écoute…";
-  if (latex !== undefined) $("alive").querySelector("math-field").value = latex;
-}
-function liveHide() { clearInterval(liveTimer); liveTimer = null; $("alive").classList.remove("on"); $("alive").querySelector("math-field").value = ""; }
-function sendPartial() {
-  if (!recording || !answerOpen || !ws || ws.readyState !== 1) return;
-  if (partialBusy && performance.now() - partialT < 4000) return;         // le précédent n'est pas revenu
-  const n = chunks.reduce((a, c) => a + c.length, 0);
-  if (n < rec.sampleRate * 0.6) return;
-  const f = new Float32Array(n); let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
-  partialBusy = true; partialT = performance.now();
-  ws.send(JSON.stringify({t: "audio", sr: rec.sampleRate, target: "partial"}));
-  ws.send(f.buffer);
-}
 async function startRec() {
   if (recording || starting || silent) return;
   starting = true; recKeyT = performance.now(); firstChunkT = null;
@@ -452,14 +401,9 @@ async function startRec() {
   try { await acquire(); }
   catch (e) { starting = false; showErr("micro : " + e.name + " " + e.message); show("listening"); return; }
   starting = false;
-  if (!answerOpen || playing || queue.length) bargeIn();   // dicter une ligne de calcul ne coupe que si le prof parle
+  bargeIn();
   if (rec.state !== "running") await rec.resume();
   recording = true; chunks = []; recT0 = performance.now();
-  if (answerOpen) {
-    $("apending").textContent = "j'enregistre ta ligne de calcul… (espace pour finir)";
-    liveShow("", ""); partialBusy = false;
-    clearInterval(liveTimer); liveTimer = setInterval(sendPartial, 1000);
-  }
   show("recording");
   recTimer = setInterval(() => {
     const t = (performance.now() - recT0) / 1000;
@@ -477,8 +421,6 @@ function stopRec(sendIt, now) {
     return;
   }
   if (tailTimer) { clearTimeout(tailTimer); tailTimer = null; }
-  clearInterval(liveTimer); liveTimer = null;
-  if (!sendIt) liveHide();
   recording = false; clearInterval(recTimer);
   const n = chunks.reduce((a, c) => a + c.length, 0), f = new Float32Array(n);
   let o = 0; for (const c of chunks) { f.set(c, o); o += c.length; }
@@ -556,78 +498,10 @@ async function setMode(m) {
   show(serverState === "done" ? "listening" : serverState);
 }
 
-// --- panneau « Ta réponse » : calculs dictés ligne par ligne, convertis en LaTeX (champ MathLive éditable) ---
-let answerOpen = false;
-function openAnswer() {
-  answerOpen = true; $("answer").classList.add("open");
-  if (!$("alines").children.length) aAdd("");
-  dbg("panneau réponse ouvert"); saveAns();
-}
-function closeAnswer() { answerOpen = false; $("answer").classList.remove("open"); saveAns(); }
-// le panneau « Ta réponse » survit à un rechargement : lignes, pourquoi, ouvert ou non (par tableau)
 let SLUG = "", goStarted = false;
 const RESUME = new URLSearchParams(location.search).has("resume");
 let resumed = false;
 if (RESUME) history.replaceState(null, "", location.pathname + location.search.replace(/[?&]resume=1/, "").replace(/^&/, "?"));
-function saveAns() {
-  if (!SLUG) return;
-  const lines = aLines().map(r => ({l: r.querySelector("math-field").value, why: r.querySelector(".why").value}));
-  try { localStorage.setItem("prof-ans-" + SLUG, JSON.stringify({open: answerOpen, lines})); } catch (e) {}
-}
-function restoreAns() {
-  let st = null;
-  try { st = JSON.parse(localStorage.getItem("prof-ans-" + SLUG) || "null"); } catch (e) {}
-  if (!st || !st.lines || (!st.open && !st.lines.some(l => l.l))) return;
-  $("alines").innerHTML = "";
-  for (const l of st.lines) { const r = aAdd(l.l || ""); r.classList.remove("flash"); r.querySelector(".why").value = l.why || ""; if (!l.l) break; }
-  if (st.open) openAnswer();
-}
-$("answer").addEventListener("input", () => saveAns());
-function aLines() { return [...$("alines").querySelectorAll(".aline")]; }
-function lastFilled() { return aLines().filter(r => r.querySelector("math-field").value.trim()).pop(); }
-function lastLatex() { const r = lastFilled(); return r ? r.querySelector("math-field").value : null; }
-function renumber() { aLines().forEach((r, i) => r.querySelector(".num").textContent = i + 1); }
-function aAdd(latex) {
-  // réutilise une dernière ligne vide plutôt que d'en empiler
-  let row = aLines().pop();
-  if (!row || row.querySelector("math-field").value.trim()) {
-    row = document.createElement("div"); row.className = "aline";
-    row.innerHTML = `<span class="num"></span><math-field math-virtual-keyboard-policy="manual"></math-field><input class="why" placeholder="parce que…"><button title="Supprimer la ligne">×</button>`;
-    row.querySelector("button").onclick = () => { row.remove(); renumber(); saveAns(); };
-    $("alines").append(row); renumber();
-  }
-  row.querySelector("math-field").value = latex;
-  row.classList.remove("flash"); void row.offsetWidth; if (latex) row.classList.add("flash");
-  saveAns();
-  return row;
-}
-function ansPending(on) { $("apending").textContent = on ? "conversion…" : ""; }
-function onAns(m) {
-  ansPending(false); show("listening");
-  if (m.op === "add") aAdd(m.latex);
-  else if (m.op === "fix") { const r = lastFilled() || aAdd(""); r.querySelector("math-field").value = m.latex; r.classList.remove("flash"); void r.offsetWidth; r.classList.add("flash"); }
-  else if (m.op === "why") { const r = lastFilled(); if (r) r.querySelector(".why").value = m.text; }
-  else if (m.op === "submit") submitAnswer();
-  saveAns();
-  if (m.text) $("apending").textContent = `« ${m.text} »`;
-  else if (m.op === "none") $("apending").textContent = "rien compris : redicte la ligne (en entier, et attends une demi-seconde avant le 2e espace)";
-}
-function submitAnswer() {
-  const lines = aLines().map(r => ({l: r.querySelector("math-field").value.trim(), why: r.querySelector(".why").value.trim()})).filter(l => l.l);
-  if (!lines.length) { $("apending").textContent = "rien à envoyer"; return; }
-  bargeIn();
-  send({t: "answer", lines}); dbg("réponse envoyée", lines);
-  $("alines").innerHTML = ""; closeAnswer(); saveAns(); tSpeechEnd = performance.now(); vadWait = 0;
-}
-$("aadd").onclick = () => { const r = aAdd(""); r.querySelector("math-field").focus(); };
-$("asend").onclick = submitAnswer;
-$("aclose").onclick = closeAnswer;
-$("answerbtn").onclick = () => answerOpen ? closeAnswer() : openAnswer();
-$("atext").onkeydown = e => {                         // une ligne tapée en français (« sigma deux égale… »)
-  if (e.key !== "Enter" || !$("atext").value.trim()) return;
-  e.stopPropagation(); ansPending(true);
-  send({t: "answer_line", text: $("atext").value.trim(), last: lastLatex()}); $("atext").value = "";
-};
 
 // --- choix du micro ---
 const pref = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } };
@@ -812,7 +686,7 @@ function answerPerm(id, choice) {
 }
 document.addEventListener("keydown", e => {        // O / N : répondre à la plus ancienne demande affichée
   const first = $("perms").firstElementChild;
-  if (!first || ["INPUT", "TEXTAREA", "MATH-FIELD"].includes(e.target.tagName) || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (!first || ["INPUT", "TEXTAREA"].includes(e.target.tagName) || e.ctrlKey || e.altKey || e.metaKey) return;
   const k = e.key.toLowerCase();
   if (k === "o" || k === "n") { e.preventDefault(); e.stopImmediatePropagation(); answerPerm(first.id.slice(5), k === "o" ? "allow" : "deny"); }
 }, true);
@@ -842,14 +716,6 @@ function playSample(m) {
 }
 $("pause").onclick = () => setPaused(!userPaused);
 $("rew").onclick = rewind;
-// MathLive : dossier des polices explicite (sinon « fonts-did-not-load » selon le chargement), et pas de sons de frappe
-window.addEventListener("load", () => {
-  if (window.MathfieldElement) {
-    MathfieldElement.fontsDirectory = "https://cdn.jsdelivr.net/npm/mathlive@0.109.2/fonts/";
-    MathfieldElement.soundsDirectory = null;
-    MathfieldElement.keypressSound = null; MathfieldElement.plonkSound = null;
-  }
-});
 // --- mode silencieux (en cours, en bibliothèque…) : ni voix ni micro, mémorisé par board côté serveur ---
 let silent = false;
 { const c = document.querySelector("#cover p"); if (c) c.dataset.voice = c.innerHTML; }
@@ -945,25 +811,20 @@ $("mute").onclick = () => {
   show(serverState === "done" ? "listening" : serverState);
 };
 document.addEventListener("keydown", e => {
-  const typing = ["INPUT", "TEXTAREA", "MATH-FIELD", "SELECT"].includes(e.target.tagName);
+  const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName);
   if (calOpen) {                                   // calibration : espace = lire / fini, Échap = fermer
     if (e.code === "Space" && !typing) { e.preventDefault(); if (!e.repeat) calToggle(); }
     else if (e.code === "Escape") closeCalib();
     return;
   }
-  if (answerOpen && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAnswer(); return; }
-  if (e.code === "Escape" && !recording && answerOpen) { closeAnswer(); return; }
   if (typing) return;
   const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
-  if (e.key.toLowerCase() === "r" && plain) { e.preventDefault(); answerOpen ? closeAnswer() : openAnswer(); return; }
   if (e.key.toLowerCase() === "s" && plain) { e.preventDefault(); toggleSilent(); return; }
   if (e.key.toLowerCase() === "p" && plain) { e.preventDefault(); setPaused(!userPaused); return; }
   if (e.key === "ArrowLeft" && plain) { e.preventDefault(); rewind(); return; }
   if (!micReady) return;
-  if (e.code === "Space" && silent) {          // silencieux : espace mène au champ texte (ou à la ligne de calcul)
-    e.preventDefault();
-    if (answerOpen) { const mf = aLines().map(r => r.querySelector("math-field")).pop(); (mf || $("atext")).focus(); }
-    else $("bigtxt").focus();
+  if (e.code === "Space" && silent) {          // silencieux : espace mène au champ texte
+    e.preventDefault(); $("bigtxt").focus();
     return;
   }
   if (e.code === "Space") {

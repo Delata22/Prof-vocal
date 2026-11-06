@@ -63,7 +63,6 @@ Variables : `PROF_MODEL` (défaut `claude-opus-5-5`), `PROF_EFFORT` (défaut `lo
 - Micro : **espace** = 1er appui j'enregistre (et coupe le prof), 2e appui j'envoie ; Échap annule. Bouton « Mode » pour le mode auto (VAD, fin de phrase détectée seule, envoi forcé à 20 s ou avec « Envoyer »). Traces dans la console (`[prof …]`) et « VAD au repos » dans la barre.
 - Page muette pour les tests : http://localhost:8778/?mute
 - Voix du prof : **P** pause / reprise (exactement où il en était, sans l'interrompre), **←** reprend la phrase en cours (2 appuis rapides : la précédente), clic sur une phrase de la transcription : réécoute à partir d'elle.
-- ✎ **Ta réponse** (touche R, ou ouvert par le prof via le marqueur `[[réponse]]`) : espace dicte une ligne de calcul, convertie en LaTeX par un Claude séparé (`PROF_CONV_MODEL`, défaut Haiku, ~1,5-2 s) dans un champ MathLive éditable ; « parce que … » ajoute le pourquoi, « corrige : … » modifie la dernière ligne, « j'envoie » (ou Ctrl+Entrée) envoie : carte derivation `R.<n>` au tableau + commentaire ligne par ligne du prof.
 - ⚙ Réglages : choix du micro (et filtres écho/bruit/gain du navigateur), voix Piper (siwis, tom, upmc jessica/pierre, gilles, mls), vitesse, « Écouter un exemple ». Réglage de voix gardé dans `voice.json`.
 - Capture du mode espace au taux natif du micro (AudioWorklet), rééchantillonnée en 16 kHz côté serveur (soxr) ; le brut est gardé dans `sessions/<slug>/audio/*.raw<taux>.wav`.
 - Dans la page : bouton « Question test (wav) », ou taper une question + Entrée (interrompt aussi).

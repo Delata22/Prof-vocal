@@ -205,7 +205,7 @@ SPEAKABLE = [
     (re.compile(r"`[^`]*`"), " "),
     (re.compile(r"https?://\S+"), " "),
     (re.compile(r"\[\[[^\]]*\]\]"), " "),
-    (re.compile(r"⟦[^⟧]*⟧?"), " "),                   # repère inline (ou coupé en fin de tour)        # marqueurs pour la page ([[réponse]])
+    (re.compile(r"⟦[^⟧]*⟧?"), " "),                   # repère inline (ou coupé en fin de tour)
     (re.compile(r"[*_#>|`~]+"), " "),
     (re.compile(r"^\s*[-•]\s+", re.M), ""),
     (re.compile(r"\s+"), " "),
@@ -218,7 +218,6 @@ def speakable(t):
     return t.strip()
 
 
-ANSWER_MARK = re.compile(r"\[\[\s*r[ée]ponse\s*\]\]", re.I)
 SENT_END = re.compile(r"[.!?…]+[»\"')]*\s+|\n+")
 
 
@@ -422,97 +421,6 @@ class Brain:
 
 
 
-# ---------------- conversion parole -> LaTeX (panneau « Ta réponse ») ----------------
-
-CONV_SYS = r"""Tu convertis une ligne de calcul dictée en français (sortie d'une reconnaissance vocale, fautes possibles) en UNE ligne LaTeX.
-Réponds uniquement par cette ligne LaTeX : pas de $, pas de bloc de code, pas de commentaire, pas de seconde ligne.
-Lettres grecques en commandes (\sigma), indices avec _, « racine de » → \sqrt{}, « sur » ou « divisé par » → \frac{}{},
-« fois » → \, ou \times, « environ égal » → \approx, « laplacien » → \nabla^2, « dérivée partielle » → \partial.
-Nombres à virgule : point décimal (« un virgule cinq » → 1.5), en particulier dans un vecteur ou un n-uplet : (1.5, -0.5), jamais (1,5, -0,5).
-La reconnaissance vocale écrit souvent le NOM d'une lettre comme un mot qui sonne pareil : retrouve la lettre.
-« haine », « aine », « hen » → n ; « aime », « hem » → m ; « cas », « ka » → k ; « thé », « té » → t ; « pé », « paix » → p ;
-« ix », « hix » → x ; « i grec » → y ; « zed » → z ; « elle », « aile » → l ; « èf », « effe » → f ; « gé », « j'ai » → g ;
-« achète », « hache » → h ; « air », « erre » → r ; « esse » → s ; « vé » → v ; « bé » → b ; « cé », « c'est » → c ; « dé » → d.
-« à mentir », « un entier » → un entier (\in \mathbb{N} ou \in \mathbb{Z} selon le contexte) ; « un réel », « une réelle » → \in \mathbb{R}.
-Les mots du texte (soit, pour tout, il existe, donc, alors) restent du texte : \text{soit } n \in \mathbb{N}.
-Écris fidèlement ce qui est dicté, même si c'est faux : ne corrige jamais le raisonnement.
-Si le message contient « LIGNE ACTUELLE » et « CORRECTION », renvoie la ligne actuelle modifiée selon la consigne,
-en ne changeant que ce qu'elle vise ; « X, pas Y » veut dire : remplace Y par X.
-Cours : {topic}.
-Exemples :
-sigma deux égale racine de deux fois sigma un → \sigma_2 = \sqrt{2}\,\sigma_1
-d sur dx de e puissance moins x carré → \frac{d}{dx} e^{-x^2}
-soit haine à mentir → \text{soit } n \in \mathbb{N}
-pour tout ix réel, èf de ix supérieur ou égal à zéro → \forall x \in \mathbb{R},\ f(x) \geq 0
-LIGNE ACTUELLE : a = b^2 + c / CORRECTION : moins c, pas plus c → a = b^2 - c"""
-
-
-class Converter:
-    """Un processus Claude séparé (jamais le prof), persistant pour la latence, sans outils."""
-    def __init__(self, model, topic):
-        self.model, self.topic = model, topic
-        self.proc, self.lock, self.n, self.drainer = None, asyncio.Lock(), 0, None
-
-    async def start(self):
-        env = dict(os.environ, CLAUDE_CODE_DISABLE_AUTO_MEMORY="1")
-        env.pop("LD_LIBRARY_PATH", None)
-        cwd = SESS / "_conv"
-        cwd.mkdir(parents=True, exist_ok=True)
-        self.proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--setting-sources", "", "--tools", "", "--model", self.model,
-            "--effort", "low", "--no-session-persistence", "--system-prompt", CONV_SYS.replace("{topic}", self.topic),
-            cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL, limit=16 * 1024 * 1024)
-        self.n = 0
-        log(f"convertisseur LaTeX lancé ({self.model})")
-
-    async def convert(self, text, current=None):
-        async with self.lock:
-            if self.drainer:                     # fin du tour précédent pas encore lue
-                await self.drainer
-                self.drainer = None
-            if self.proc is None or self.proc.returncode is not None or self.n >= 40:   # contexte borné
-                if self.proc and self.proc.returncode is None:
-                    self.proc.kill()
-                await self.start()
-            self.n += 1
-            msg = f"LIGNE ACTUELLE : {current}\nCORRECTION : {text}" if current is not None else text
-            self.proc.stdin.write((json.dumps({"type": "user", "message": {"role": "user", "content": msg}}) + "\n").encode())
-            await self.proc.stdin.drain()
-            out, done = "", False
-            while True:
-                line = await self.proc.stdout.readline()
-                if not line:
-                    break
-                j = json.loads(line)
-                if j.get("type") == "stream_event" and not done:
-                    ev = j["event"]
-                    if ev.get("type") == "content_block_delta" and ev["delta"].get("type") == "text_delta":
-                        out += ev["delta"]["text"]
-                    elif ev.get("type") in ("content_block_stop", "message_stop") and out.strip():
-                        done = True
-                        # la fin du tour (result) arrive ~2 s après : on la lit en tâche de fond
-                        self.drainer = asyncio.create_task(self._drain())
-                        break
-                elif j.get("type") == "result":
-                    break
-            return self.clean(out)
-
-    async def _drain(self):
-        while True:
-            line = await self.proc.stdout.readline()
-            if not line or json.loads(line).get("type") == "result":
-                return
-
-    @staticmethod
-    def clean(out):
-        out = out.strip().strip("`").strip()
-        out = next((l for l in out.splitlines() if l.strip()), "")
-        out = re.sub(r"^(latex)?\s*", "", out, flags=re.I) if out.lower().startswith("latex") else out
-        return out.strip().strip("$").strip()
-
-
 # ---------------- chef d'orchestre ----------------
 
 class Prof:
@@ -529,7 +437,6 @@ class Prof:
         self.ears = Ears(a.whisper, a.compute, a.topic, a.slug, a.beam)
         self.voice = Voice()
         self.brain = Brain(a.slug, a.topic, a.model, a.effort, self.on_brain)
-        self.conv = Converter(a.conv_model, a.topic)
         self.gen_text = ""
         self.cues = []
         self.outbox, self.gen_done = [], False   # phrases envoyées, pas encore jouées par la page
@@ -808,69 +715,6 @@ class Prof:
         log(f"calibration {run}/{name} : {text!r}  (lu : {meta['ref']!r})")
         await self.send({"t": "calib_ok", "idx": meta["idx"], "filters": meta["filters"], "text": text})
 
-    # --- panneau « Ta réponse » ---
-    async def partial(self, raw, sr):
-        """Aperçu : texte entendu jusqu'ici, puis sa conversion LaTeX si le convertisseur est libre."""
-        loop = asyncio.get_running_loop()
-        audio = raw if sr == 16000 else soxr.resample(raw, sr, 16000, quality="QQ").astype(np.float32)
-        text = await loop.run_in_executor(None, self.ears.transcribe, audio, True)
-        await self.send({"t": "partial", "text": text})
-        if text and not self.conv.lock.locked():
-            try:
-                latex = await self.conv.convert(text)
-                await self.send({"t": "partial", "text": text, "latex": latex})
-            except Exception as e:
-                log("aperçu LaTeX :", e)
-
-    async def answer_line(self, text, last=None):
-        """Une ligne dictée : nouvelle ligne de calcul, « parce que… », « corrige : … » ou « j'envoie »."""
-        t = text.strip()
-        low = t.lower()
-        if not t:
-            return await self.send({"t": "ans", "op": "none"})
-        await self.state("listening")
-        # « j'envoie » est souvent transcrit « j'en vois »
-        if re.search(r"\bj'envoie\b|\bj'en ?vois\b|c'est ma réponse|envoie[rz]? (ma|la) réponse|\benvoyer?\b", low):
-            return await self.send({"t": "ans", "op": "submit", "text": t})
-        m = re.match(r"(parce que|parce qu'|car\b|pourquoi\b)\s*[:,]?\s*(.*)", t, re.I | re.S)
-        if m:
-            why = (m.group(1) + " " + m.group(2)).strip() if m.group(1).lower().startswith("parce") else m.group(2)
-            return await self.send({"t": "ans", "op": "why", "text": why})
-        m = re.match(r"(corrige|correction|corriger)\b\s*[:,.]?\s*(.*)", t, re.I | re.S)
-        t0 = time.time()
-        if m and last:
-            latex = await self.conv.convert(m.group(2), current=last)
-            op = "fix"
-        else:
-            latex = await self.conv.convert(m.group(2) if m else t)
-            op = "add"
-        log(f"ligne de calcul ({time.time() - t0:.2f} s) : {t!r} -> {latex!r}")
-        if not re.search(r"[\\=^_+\-*/()<>|0-9]", latex) and len(latex.split()) > 3:   # une phrase, pas un calcul
-            return await self.send({"t": "ans", "op": "none", "text": f"pas compris comme un calcul : « {t} »"})
-        await self.send({"t": "ans", "op": op, "latex": latex, "text": t})
-
-    async def submit_answer(self, lines):
-        lines = [{"l": l.get("l", "").strip(), "why": l.get("why", "").strip()} for l in lines if l.get("l", "").strip()]
-        if not lines:
-            return
-        k = self.brain.meta.get("answers", 0) + 1
-        self.brain.meta["answers"] = k
-        self.brain.meta_f.write_text(json.dumps(self.brain.meta))
-        cid = f"R.{k}"
-        f = self.brain.dir / "cards" / f"{cid}.json"
-        f.write_text(json.dumps(lines, ensure_ascii=False))
-        p = await asyncio.create_subprocess_exec("python3", str(CAHIER), "add", self.a.slug, cid, f"Ta réponse {k}",
-                                                 "--kind", "derivation", "--step", "R. Tes réponses", "--file", str(f),
-                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        log(f"réponse écrite {cid} au tableau :", (await p.communicate())[0].decode().strip())
-        body = "\n".join(f"Ligne {i + 1} : {l['l']}" + (f"   — {l['why']}" if l["why"] else "") for i, l in enumerate(lines))
-        msg = (f"[Réponse écrite de l'élève, en LaTeX ; elle est au tableau, carte {cid}]\n{body}\n"
-               f"[Commente-la ligne par ligne : ce qui est juste, et pour ce qui ne l'est pas, une question qui l'aide à "
-               f"trouver lui-même. Tu peux mettre ta correction à côté : cahier.py duo {self.a.slug} {cid} <id>.]")
-        await self.send({"t": "user", "text": "(réponse écrite : " + " ; ".join(l["l"] for l in lines) + ")"})
-        await self.question(msg)
-        self.history[-1] = ("élève", "réponse écrite " + cid)
-
     # --- autorisations (le prof veut lancer une commande, écrire un fichier…) ---
     @staticmethod
     def perm_key(req):
@@ -940,10 +784,7 @@ class Prof:
             if "first_text" not in self.t:
                 self.t["first_text"] = time.time()
             self.buf += data
-            before, self.gen_text = self.gen_text, self.gen_text + data
-            if ANSWER_MARK.search(self.gen_text) and not ANSWER_MARK.search(before):
-                log("le prof ouvre le panneau « Ta réponse »")
-                await self.send({"t": "open_answer"})
+            self.gen_text += data
             sents, self.buf = cut_sentences(self.buf)
             for s in sents:
                 await self.queue_say(gen, s)
@@ -1071,7 +912,7 @@ class Prof:
                          "history": self.history[-12:], "voices": self.voice.catalog(), "voice": self.voice.current(),
                          "silent": self.silent})
         next_sr = 16000          # taux du prochain segment binaire (annoncé par {t: audio, sr})
-        next_hdr = {}            # en-tête complet ({target: "answer", last: ...} pour le panneau « Ta réponse »)
+        next_hdr = {}            # en-tête complet du prochain segment ({target: "calib", …})
         for _req, pm in self.perms.values():      # demandes d'autorisation encore en attente
             await self.send(pm)
         if self.outbox or self.brain.busy:
@@ -1092,9 +933,6 @@ class Prof:
                 t0 = time.time()
                 raw, sr, next_sr = np.frombuffer(msg.data, np.float32), next_sr, 16000
                 hdr, next_hdr = next_hdr, {}
-                if hdr.get("target") == "partial":    # aperçu en direct d'une ligne de calcul en cours de dictée
-                    asyncio.create_task(self.partial(raw, sr))
-                    continue
                 if hdr.get("target") == "calib":      # calibration du micro : jamais envoyé au prof
                     asyncio.create_task(self.calib(raw, sr, hdr))
                     continue
@@ -1108,12 +946,9 @@ class Prof:
                 log(f"segment reçu : {len(raw) / sr:.1f} s à {sr} Hz, max {float(np.abs(raw).max()) if len(raw) else 0:.2f}, "
                     f"rms {rms:.3f}" + (f", ⚠ {holes} trous de silence numérique (capture ?)" if holes else ""))
                 await self.state("transcribing")
-                text = await loop.run_in_executor(None, self.ears.transcribe, audio, hdr.get("target") == "answer")
+                text = await loop.run_in_executor(None, self.ears.transcribe, audio)
                 log(f"entendu ({len(audio) / 16000:.1f} s d'audio, stt {time.time() - t0:.2f} s) : {text!r}")
                 loop.run_in_executor(None, self.keep_audio, audio, text, raw, sr)
-                if hdr.get("target") == "answer":
-                    asyncio.create_task(self.answer_line(text, hdr.get("last")))
-                    continue
                 if not text:
                     await self.state("listening")
                     if self.interrupted is not None and not self.brain.busy:
@@ -1139,10 +974,6 @@ class Prof:
                     self.gen += 1      # ignore tout ce qui arrive encore de l'ancienne génération
                     self.outbox = []
                     await self.brain.interrupt()
-                elif j["t"] == "answer":
-                    await self.submit_answer(j.get("lines", []))
-                elif j["t"] == "answer_line":     # ligne tapée en français dans le panneau
-                    asyncio.create_task(self.answer_line(j["text"], j.get("last")))
                 elif j["t"] == "text":
                     prefix, shows = await self.take_selection()
                     sent = await self.attach_paths(j["text"])          # chemins de fichiers dans le message
@@ -1244,12 +1075,10 @@ async def main():
     ap.add_argument("--whisper", default=os.environ.get("PROF_WHISPER", "large-v3-turbo"))
     ap.add_argument("--compute", default=os.environ.get("PROF_WHISPER_COMPUTE", "int8_float16"))
     ap.add_argument("--beam", type=int, default=int(os.environ.get("PROF_WHISPER_BEAM", "5")))
-    ap.add_argument("--conv-model", default=os.environ.get("PROF_CONV_MODEL", "claude-haiku-5-5"))
     a = ap.parse_args()
 
     prof = Prof(a)
     await prof.brain.start()
-    await prof.conv.start()
     asyncio.create_task(prof.tts_worker())
 
     app = web.Application()
