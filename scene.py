@@ -39,8 +39,8 @@ def build(js: Path) -> Path:
     code = js.read_text()
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8">
-<link rel="stylesheet" href="{KATEX}/katex.min.css">
-<script src="{KATEX}/katex.min.js"></script>
+<link rel="stylesheet" href="{KATEX}/katex.min.css" crossorigin="anonymous">
+<script src="{KATEX}/katex.min.js" crossorigin="anonymous"></script>
 </head><body>
 <script>
 {LIB.read_text()}
@@ -113,7 +113,17 @@ def render(html_path: Path, png: Path, dark=True):
     def step():
         k = state["k"]
         if k >= state["n"]:
-            return Gtk.main_quit()
+            # puis toutes les étapes jouées animées (accéléré ×4) : erreurs qui n'arrivent qu'en mouvement
+            def played(v, r):
+                try:
+                    errs = json.loads(v.call_async_javascript_function_finish(r).to_json(0) or "[]")
+                    res["errors"] = list(dict.fromkeys(res["errors"] + [f"(pendant l'animation) {e}" for e in errs
+                                                                       if e not in res["errors"]]))
+                except GLib.Error as e:
+                    res["errors"].append("lecture animée : " + e.message)
+                Gtk.main_quit()
+            view.call_async_javascript_function("return await __scene.playthrough(4);", -1, None, None, None, None, played)
+            return
 
         def after_goto(_):
             later(350, lambda: js("JSON.stringify({r:__scene.report(),err:__scene.errors()})", got_report))

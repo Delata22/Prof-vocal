@@ -649,6 +649,7 @@ function animBuilder(mob) {   // m.animate.shift(UP).set_color(RED) : enregistre
   const anim = new Tween(mob, m => { const from = m.state(); calls.forEach(([k, a]) => m[k](...a)); const to = m.state(); m.setState(from); return {from, to}; });
   const prox = new Proxy(anim, {get(t, k) {
     if (k in t || typeof k === "symbol") return t[k];
+    if (typeof mob[k] !== "function") throw new Error(`.animate.${String(k)}() : ${mob.constructor.name} n'a pas de méthode ${String(k)} (voir API.md, « Placement »)`);
     return (...a) => { calls.push([k, a]); return prox; };
   }});
   return prox;
@@ -799,12 +800,14 @@ class Scene {
   // un pas de rendu : mises à jour attachées, puis dessin de tout ce qui est affiché
   tick(dt) {
     this.geom();
-    for (const l of [...this.on]) for (const u of l.ups) u(l, dt);
-    for (const l of this.on) l.render();
+    let err = null;
+    for (const l of [...this.on]) for (const u of l.ups) { try { u(l, dt); } catch (e) { err = err || e; } }
+    for (const l of this.on) { try { l.render(); } catch (e) { err = err || e; } }
+    if (err) throw err;
   }
 }
 
-let BUILD = null, OPTS = {}, cur = -1, token = 0, ready = false, running = false;
+let BUILD = null, OPTS = {}, cur = -1, token = 0, ready = false, running = false, SPEED = 1;
 function scene(o, fn) { if (typeof o === "function") { fn = o; o = {}; } OPTS = o; BUILD = fn; if (ready) goto(0); }
 
 function rebuild() {
@@ -821,7 +824,10 @@ function rebuild() {
   catch (e) { showError(e); throw e; }
 }
 function showError(e) {
-  (window.__sceneErrors = window.__sceneErrors || []).push(e && e.message ? `${e.message} (${String(e.stack || "").split("\n")[0]})` : String(e));
+  const msg = e && e.message ? `${e.message} (${String(e.stack || "").split("\n")[0]})` : String(e);
+  (window.__sceneErrors = window.__sceneErrors || []).push(msg);
+  // jusqu'à la page du prof (fenêtre du haut), qui le signale au prof : il ne voit pas l'écran de l'élève
+  try { if (window.top !== window) window.top.postMessage({sceneError: msg, scene: document.title || (S && S.steps[0] && S.steps[0].caption) || ""}, "*"); } catch (x) {}
   const b = document.getElementById("sc-err"); b.textContent = "Erreur dans la scène : " + (e && e.message || e); b.style.display = "block";
 }
 async function runStep(k, animate, tk) {
@@ -832,16 +838,22 @@ async function runStep(k, animate, tk) {
   for (const a of q) {
     if (tk !== token) return;                 // une autre étape a été demandée : cette scène est abandonnée
     if (!animate) { S.runNow(a); continue; }
-    if (a.kind === "do") { a.fn(); S.tick(0); continue; }
-    const D = a.kind === "wait" ? a.t : a.anim.duration();
-    if (a.kind === "play") a.anim.update(0);
+    if (a.kind === "do") { try { a.fn(); S.tick(0); } catch (e) { showError(e); } continue; }
+    const D = (a.kind === "wait" ? a.t : a.anim.duration()) / SPEED;
+    try { if (a.kind === "play") a.anim.update(0); } catch (e) { showError(e); }
     await new Promise(res => {
       const t0 = performance.now();
       const frame = now => {
         if (tk !== token) return res();
         const e = (now - t0) / 1000;
-        if (a.kind === "play") { if (e >= D) a.anim.finish(); else a.anim.update(e); }
-        S.tick(1 / 60);
+        try {            // une erreur ne fige pas la scène : l'animation est terminée d'un coup, et l'erreur affichée
+          if (a.kind === "play") { if (e >= D) a.anim.finish(); else a.anim.update(e * SPEED); }
+          S.tick(1 / 60);
+        } catch (err) {
+          showError(err);
+          try { if (a.kind === "play") a.anim.finish(); S.tick(0); } catch (e2) {}
+          return res();
+        }
         if (e >= D) res(); else requestAnimationFrame(frame);
       };
       requestAnimationFrame(frame);
@@ -957,7 +969,9 @@ function setup() {
   document.getElementById("sc-again").onclick = () => goto(cur);
   addEventListener("message", e => { if (e.data && typeof e.data.step === "number") goto(e.data.step); });
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => goto(cur, true));
-  new ResizeObserver(() => S && S.ov && S.tick(0)).observe(document.getElementById("sc"));
+  let rz = 0;
+  new ResizeObserver(() => { cancelAnimationFrame(rz); rz = requestAnimationFrame(() => { try { S && S.ov && S.tick(0); } catch (e) { showError(e); } }); })
+    .observe(document.getElementById("sc"));
 }
 async function fontsReady() {
   const faces = ["20px KaTeX_Main", "italic 20px KaTeX_Main", "bold 20px KaTeX_Main", "italic 20px KaTeX_Math", "20px KaTeX_AMS",
@@ -965,7 +979,13 @@ async function fontsReady() {
   try { await Promise.race([Promise.all(faces.map(f => document.fonts.load(f))), new Promise(r => setTimeout(r, 4000))]); } catch (e) {}
   try { await document.fonts.ready; } catch (e) {}
 }
-window.addEventListener("error", e => showError(e.error || e.message));
+window.addEventListener("error", e => {
+  const m = String(e.message || "");
+  if (/ResizeObserver loop/.test(m)) return;
+  if (!e.error && /^Script error\.?$/.test(m)) { console.warn("erreur masquée par le navigateur (Script error.)"); return; }
+  showError(e.error || m);
+});
+window.addEventListener("unhandledrejection", e => showError(e.reason));
 (async () => {
   if (document.readyState === "loading") await new Promise(r => document.addEventListener("DOMContentLoaded", r));
   setup();
@@ -976,8 +996,14 @@ window.addEventListener("error", e => showError(e.error || e.message));
   if (BUILD) goto(0, !!window.__SCENE_CHECK);
 })();
 
+async function playthrough(speed = 4) {
+  SPEED = speed;
+  try { for (let k = 0; k < (S ? S.steps.length : 0); k++) await goto(k); }
+  finally { SPEED = 1; }
+  return window.__sceneErrors || [];
+}
 window.__scene = {
-  goto, report, steps: () => (S ? S.steps.length : 0), ready: () => ready && !!S,
+  goto, report, playthrough, steps: () => (S ? S.steps.length : 0), ready: () => ready && !!S,
   size: () => [OPTS.w || 16, OPTS.h || 9], captions: () => S.steps.map(s => s.caption), errors: () => window.__sceneErrors || [],
 };
 // tout s'appelle avec ou sans new : Group(a, b) comme new Group(a, b)

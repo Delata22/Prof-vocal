@@ -273,7 +273,7 @@ function send(o) {
   ws.send(typeof o === "string" || o instanceof ArrayBuffer ? o : JSON.stringify(o)); }
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws?v=2`); ws.binaryType = "arraybuffer";
-  ws.onopen = () => show("listening");
+  ws.onopen = () => { show("listening"); flushSceneErrs(); };
   ws.onclose = e => {
     if (e.code === 4001 || replaced) { replacedCover(); return; }   // une autre page a pris la main : pas de reconnexion
     show("off"); setTimeout(connect, 1500);
@@ -810,6 +810,14 @@ $("mute").onclick = () => {
   if (muted) unduck();
   show(serverState === "done" ? "listening" : serverState);
 };
+// erreur dans une scène du tableau (carte iframe → fenêtre du haut) : transmise au prof, qui ne voit pas cet écran
+const sceneErrs = [];          // gardées jusqu'à la connexion (une scène peut échouer avant)
+function flushSceneErrs() { while (sceneErrs.length && ws && ws.readyState === 1) ws.send(JSON.stringify(sceneErrs.shift())); }
+addEventListener("message", e => {
+  if (!e.data || !e.data.sceneError) return;
+  sceneErrs.push({t: "scene_error", text: String(e.data.sceneError).slice(0, 400), scene: String(e.data.scene || "").slice(0, 120)});
+  flushSceneErrs();
+});
 document.addEventListener("keydown", e => {
   const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName);
   if (calOpen) {                                   // calibration : espace = lire / fini, Échap = fermer

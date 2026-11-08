@@ -505,6 +505,7 @@ class Prof:
         self.silent = bool(self.brain.meta.get("silent"))
         self.pending_images = []        # [(chemin, media_type, base64)] à joindre au prochain message   # mode silencieux, mémorisé par board
         self.mode_notice = ""                  # repères en attente d'une phrase
+        self.scene_errors = []                 # erreurs affichées dans une scène chez l'élève, pour le prochain message
         self.started = False
 
     async def send(self, obj):
@@ -531,6 +532,10 @@ class Prof:
         if self.brain.prompt_notice:    # consignes mises à jour depuis le début de la séance
             msg = self.brain.prompt_notice + "\n" + msg
             self.brain.prompt_notice_sent()
+        if self.scene_errors:           # erreurs JS affichées dans une scène chez l'élève depuis le dernier message
+            msg = ("[Erreur affichée dans une scène du tableau, chez l'élève (tu ne vois pas son écran) : "
+                   + " ; ".join(self.scene_errors) + ". Corrige la scène.]\n" + msg)
+            self.scene_errors = []
         if self.mode_notice:            # bascule voix / silencieux depuis le dernier message
             msg, self.mode_notice = self.mode_notice + "\n" + msg, ""
         if self.interrupted is not None:
@@ -1123,6 +1128,11 @@ class Prof:
                     asyncio.create_task(self.run_cues(j.get("cues", []), j.get("idx")))
                 elif j["t"] == "miclat":         # délai entre l'appui sur espace et le 1er son du micro
                     log(f"micro prêt en {j.get('ms')} ms ({j.get('mic', '')})")
+                elif j["t"] == "scene_error":    # une scène du tableau a affiché une erreur chez l'élève
+                    e = (f"« {j.get('scene')} » : " if j.get("scene") else "") + j.get("text", "")
+                    log("erreur dans une scène :", e)
+                    if e not in self.scene_errors and len(self.scene_errors) < 5:
+                        self.scene_errors.append(e)
                 elif j["t"] == "activity":       # battement de la page (toutes les 4 s) : signal pour Regulator
                     self.write_activity(bool(j.get("active")))
                 elif j["t"] == "latency":
