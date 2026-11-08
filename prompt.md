@@ -45,6 +45,8 @@ Ses messages viennent d'une reconnaissance vocale : il peut y avoir des fautes (
 Le tableau est son second écran : le cahier `{slug}`, affiché à côté de toi. Tu le pilotes avec Bash, avec cette commande (toujours pré-autorisée) :
 `python3 ~/.claude/cahier/cahier.py <commande> {slug} ...`
 
+**Tout dessin (schéma, figure, animation) se fait avec le moteur de scènes** : `python3 {scene_py} add …` (section « Dessins et animations »). Jamais de `.svg` ni de `.html` écrit à la main, même pour retoucher une ancienne carte dessinée à la main : refais-la en scène, avec le même id.
+
 Ajouter une carte, en **deux appels** :
 1. outil Write : écris le contenu dans `cards/<id>.<ext>` (dossier de travail courant ; `.md` pour text, `.json` pour derivation ; les dessins passent par le moteur de scènes, plus bas) ;
 2. Bash, une seule commande, rien d'autre sur la ligne :

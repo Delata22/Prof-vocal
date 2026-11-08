@@ -288,7 +288,66 @@ class Brain:
     def fresh(self):
         return not self.meta.get("session_id")
 
+    # --- consignes mises à jour en cours de séance ---
+    @staticmethod
+    def prompt_sections(text):
+        """{titre de section ## : empreinte} d'un prompt.md (gabarit brut)."""
+        import hashlib
+        out = {}
+        for part in ("\n" + text).split("\n## ")[1:]:
+            title, _, body = part.partition("\n")
+            out[title.strip()] = hashlib.sha1(body.strip().encode()).hexdigest()[:12]
+        return out
+
+    def old_prompt(self):
+        """Le prompt.md en vigueur au début de cette séance Claude (pour une séance d'avant ce suivi) : version git
+        de prompt.md à la date du premier message de la séance."""
+        import subprocess
+        sid = self.meta.get("session_id")
+        for f in Path.home().glob(f".claude/projects/*/{sid}.jsonl"):
+            try:
+                for line in f.open():
+                    ts = json.loads(line).get("timestamp")
+                    if ts:
+                        h = subprocess.run(["git", "-C", str(HERE), "log", "-1", f"--before={ts}", "--format=%H", "--", "prompt.md"],
+                                           capture_output=True, text=True).stdout.strip()
+                        if h:
+                            return subprocess.run(["git", "-C", str(HERE), "show", f"{h}:prompt.md"],
+                                                  capture_output=True, text=True).stdout
+                        return None
+            except (OSError, ValueError):
+                pass
+        return None
+
+    def check_prompt_update(self, raw):
+        """À la reprise d'une séance : si des sections de prompt.md sont nouvelles ou ont changé, une note pour le
+        prochain message (sinon le prof garde les habitudes de la conversation et ignore la nouveauté)."""
+        new = self.prompt_sections(raw)
+        self.new_sections, self.prompt_notice = new, ""
+        if not self.meta.get("session_id"):
+            self.meta["prompt_sections"] = new
+            return
+        old = self.meta.get("prompt_sections")
+        if old is None:
+            prev = self.old_prompt()
+            old = self.prompt_sections(prev) if prev else new
+        changed = [t for t, h in new.items() if old.get(t) != h]
+        if changed:
+            self.prompt_notice = ("[Note du système : tes consignes ont été mises à jour depuis le début de cette séance. "
+                                  "Sections nouvelles ou modifiées : " + " ; ".join(f"« {t} »" for t in changed) +
+                                  ". Relis-les dans tes consignes et applique-les dès maintenant : elles priment sur "
+                                  "ce que tu faisais jusqu'ici dans cette conversation.]")
+            log("consignes changées depuis le début de la séance :", ", ".join(changed))
+        else:
+            self.meta["prompt_sections"] = new
+
+    def prompt_notice_sent(self):
+        self.prompt_notice = ""
+        self.meta["prompt_sections"] = self.new_sections
+        self.meta_f.write_text(json.dumps(self.meta))
+
     async def start(self):
+        self.check_prompt_update((HERE / "prompt.md").read_text())
         system = (HERE / "prompt.md").read_text().replace("{slug}", self.slug).replace("{topic}", self.topic) \
             .replace("{pron}", f"python3 {HERE / 'pron.py'}") \
             .replace("{scene_py}", str(HERE / "scene.py")).replace("{scene_api}", str(HERE / "scene" / "API.md"))
@@ -469,6 +528,9 @@ class Prof:
         self.t = {"t0": t0 or time.time(), "stt": t_stt or time.time()}
         await self.send({"t": "gen", "gen": self.gen})
         msg = prefix + text
+        if self.brain.prompt_notice:    # consignes mises à jour depuis le début de la séance
+            msg = self.brain.prompt_notice + "\n" + msg
+            self.brain.prompt_notice_sent()
         if self.mode_notice:            # bascule voix / silencieux depuis le dernier message
             msg, self.mode_notice = self.mode_notice + "\n" + msg, ""
         if self.interrupted is not None:
