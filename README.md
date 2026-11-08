@@ -58,6 +58,11 @@ Relancer le même slug reprend la même conversation Claude (`sessions/<slug>/pr
 
 Variables : `PROF_MODEL` (défaut `claude-opus-5-5`), `PROF_EFFORT` (défaut `low`), `PROF_PORT` (8778), `PROF_NO_OPEN=1`.
 
+## Scènes animées (façon 3Blue1Brown)
+
+Le prof dessine avec `scene/scene.js`, un moteur de scènes dont l'API copie manim (réseau, plan déformable, matrice, courbes, tableaux de valeurs ; `TransformFromCopy`, `Flow`, `ApplyMatrix`…). Référence : [scene/API.md](scene/API.md).
+`python3 scene.py add <slug> <id> "Titre" --file cards/<id>.js` assemble la carte (HTML autonome, KaTeX depuis le CDN), la dessine hors écran (WebKit) étape par étape, refuse les chevauchements, traits sur un texte, débordements et erreurs JS, et écrit l'aperçu `cards/<id>.png` que le prof regarde. `check` : sans ajouter.
+
 ## Tester sans micro
 
 - Micro : **espace** = 1er appui j'enregistre (et coupe le prof), 2e appui j'envoie ; Échap annule. Bouton « Mode » pour le mode auto (VAD, fin de phrase détectée seule, envoi forcé à 20 s ou avec « Envoyer »). Traces dans la console (`[prof …]`) et « VAD au repos » dans la barre.

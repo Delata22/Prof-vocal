@@ -290,7 +290,8 @@ class Brain:
 
     async def start(self):
         system = (HERE / "prompt.md").read_text().replace("{slug}", self.slug).replace("{topic}", self.topic) \
-            .replace("{pron}", f"python3 {HERE / 'pron.py'}")
+            .replace("{pron}", f"python3 {HERE / 'pron.py'}") \
+            .replace("{scene_py}", str(HERE / "scene.py")).replace("{scene_api}", str(HERE / "scene" / "API.md"))
         # Un Claude Code complet (décision de l'élève, 2026-11-06 : « toutes les perms classiques d'un Claude normal ») :
         # tous les outils standard, tout le dossier personnel, sa config utilisateur (CLAUDE.md, mémoire, hooks).
         # Permissions « classiques » : mode auto (le classifieur laisse passer le sûr) ; ce qui reste à décider
@@ -299,7 +300,7 @@ class Brain:
         # Le cahier, la prononciation et ses cartes restent pré-autorisés (le tableau ne doit jamais attendre).
         allowed = [f"Bash(python3 {CAHIER}:*)", "Bash(python3 ~/.claude/cahier/cahier.py:*)", "Edit(./cards/**)",
                    "Read(./vocab.txt)", "Edit(./vocab.txt)", f"Bash(python3 {HERE / 'pron.py'}:*)",
-                   "Read", "Glob", "Grep"]
+                   f"Bash(python3 {HERE / 'scene.py'}:*)", "Read", "Glob", "Grep"]
         args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--include-partial-messages",
                 "--setting-sources", "user",            # ses instructions globales, sa mémoire, ses hooks
@@ -811,7 +812,7 @@ class Prof:
                                                    "Edit": "je modifie…", "Write": "j'écris…", "WebFetch": "je consulte le web…",
                                                    "WebSearch": "je cherche sur le web…"}.get(data, "j'agis…")})
         elif kind == "tool":
-            m = re.search(r"(?:cahier|pron)\.py\s+(\w+)\s*(.*)", data)
+            m = re.search(r"(?:cahier|pron|scene)\.py\s+(\w+)\s*(.*)", data)
             short = f"{m.group(1)} {m.group(2).splitlines()[0][:80]}" if m else data.splitlines()[0][:100] if data else ""
             log("outil :", short)
             await self.send({"t": "tool", "text": ("tableau : " if m else "ordinateur : ") + short})
