@@ -318,7 +318,7 @@ class WhiteboardApp(Gtk.Application):
         gpu = "GPU" if os.environ.get("WHITEBOARD_GPU") == "1" else "rendu logiciel"
         line = (f"{time.strftime('%F %T')} rendu WebKit terminé : {name} ({gpu}) ; page {view.get_uri()} ; "
                 f"board {PROF.slug} ; dernières commandes : {last}")
-        GLib.timeout_add_seconds(5, self.log_crash_report)   # apport écrit son rapport quelques secondes après
+        GLib.timeout_add_seconds(15, self.log_crash_report)   # apport écrit son rapport quelques secondes après
         print(line, file=sys.stderr, flush=True)
         try:
             STATE.mkdir(parents=True, exist_ok=True)
@@ -347,7 +347,8 @@ class WhiteboardApp(Gtk.Application):
         view.load_uri(uri)
 
     def log_crash_report(self):
-        """Signal du plantage, s'il y a un rapport apport récent (/var/crash) du processus de rendu."""
+        """Signal du plantage, s'il y a un rapport apport récent (/var/crash) du processus de rendu.
+        apport écrit le rapport quelques secondes après : on le cherche à 15 s (appelé par un timeout)."""
         try:
             reps = sorted(Path("/var/crash").glob("*WebKitWebProcess*.crash"), key=lambda f: f.stat().st_mtime)
             if reps and time.time() - reps[-1].stat().st_mtime < 120:
@@ -358,6 +359,17 @@ class WhiteboardApp(Gtk.Application):
                     f.write(f"    rapport apport {reps[-1].name} : signal {sig.group(1) if sig else '?'}"
                             f"{' ; ' + title.group(1) if title else ''}\n")
         except OSError:
+            pass
+        # journal WebKit (WEBKIT_DEBUG=Process, dans le journal utilisateur) des 40 dernières secondes :
+        # l'interface et le processus de rendu y disent pourquoi il s'est arrêté
+        try:
+            out = subprocess.run(["journalctl", "--user", "--since", "-40s", "--no-pager", "-o", "short-precise"],
+                                 capture_output=True, text=True, timeout=10).stdout.splitlines()
+            keep = [l for l in out if f"[{os.getpid()}]" in l or "WebKitWebProcess" in l
+                    or "WebKitNetworkProcess" in l or "WebKitGPUProcess" in l]
+            with open(STATE / "crashes.log", "a") as f:
+                f.write("    journal WebKit :\n" + "".join(f"      {l[:400]}\n" for l in keep[-60:]))
+        except (OSError, subprocess.SubprocessError):
             pass
         return False
 
@@ -448,6 +460,10 @@ def main() -> int:
         pass
     if os.environ.get("WHITEBOARD_DEBUG") == "1":
         os.environ.setdefault("WEBKIT_DEBUG", "Process,Loading,Compositing,Layers")
+    # Diagnostic des rechargements (2026-11-08) : le processus de rendu s'arrête sans rapport apport (donc
+    # probablement tué, pas un signal de plantage). Le journal « Process » de WebKit (dans whiteboard.log)
+    # dit pourquoi l'interface l'arrête. Léger ; à retirer une fois la cause trouvée.
+    os.environ.setdefault("WEBKIT_DEBUG", "Process")
     if not sys.stderr.isatty():         # lancé depuis le menu : pas de terminal pour voir les erreurs
         log_to_file()
     return WhiteboardApp().run([WM_CLASS, *sys.argv[1:]])
