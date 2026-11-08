@@ -643,6 +643,16 @@ class Prof:
                                 "puis demande-lui en une question ce qu'il sait déjà ou par où il veut commencer.]")
             self.history.pop()
 
+    @staticmethod
+    def join_texte(parts):
+        """« mark 12.2 --texte Q 12.2 » écrit sans guillemets : tout ce qui suit --texte, jusqu'à l'option
+        suivante, forme un seul texte (sinon cahier.py refuse les mots en trop)."""
+        if "--texte" not in parts:
+            return parts
+        i = parts.index("--texte") + 1
+        j = next((k for k in range(i, len(parts)) if parts[k].startswith("--")), len(parts))
+        return parts[:i] + ([" ".join(parts[i:j])] if j > i else []) + parts[j:]
+
     async def run_cues(self, cues, idx=None):
         """Exécute les repères d'une phrase au moment où elle est jouée (liste blanche de commandes du cahier)."""
         import shlex
@@ -654,6 +664,7 @@ class Prof:
             if not parts or parts[0] not in CUE_CMDS:
                 log(f"repère refusé : {c!r}")
                 continue
+            parts = self.join_texte(parts)
             t = time.time()
             p = await asyncio.create_subprocess_exec("python3", str(CAHIER), parts[0], self.a.slug, *parts[1:],
                                                      stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
