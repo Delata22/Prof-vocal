@@ -25,7 +25,9 @@ body.rec #bar{background:color-mix(in srgb,var(--red) 14%,transparent)} body.rec
 #log .p{color:var(--fg)} #log .p::before{content:"Prof : ";color:var(--muted)}
 #log .p .s.cur{background:color-mix(in srgb,var(--speak) 22%,transparent);border-radius:4px}
 #log .p .s{cursor:pointer} #log .p .s:hover{text-decoration:underline dotted}
-#dot.paused{background:var(--think)}
+#dot.paused,#dot.hold{background:var(--think)}
+#holdrow{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0} #holdrow button{font-size:12px;padding:3px 8px} #holdbtn:disabled{opacity:.45}
+#holdbtn.on{background:var(--acc);color:#fff;border:0;animation:pulse 1.6s infinite}
 #log .p .s.cut{text-decoration:line-through;color:var(--muted)}
 #log .tool{color:var(--muted);font-size:12px;font-style:italic}
 #side{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
@@ -83,7 +85,10 @@ button.primary{background:var(--acc);color:#fff;border:0}
 <iframe id="board"></iframe>
 <div id="bar">
   <div><button id="backbtn" hidden title="Quitter ce tableau et revenir au choix des tableaux (Ctrl+H). Arrête le prof de ce tableau.">← Tableaux</button>
-  <div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div><div id="meter"><i></i></div></div>
+  <div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div>
+  <div id="holdrow"><button id="holdmode" title="Entre deux parties de l'explication (une par étape ou encadré) : auto = la suite vient après 5 s sans rien toucher (→ fige, → de nouveau reprend) ; manuel = → pour chaque suite">Enchaînement : auto</button>
+    <button id="holdbtn" disabled title="Flèche droite">Suite ▶</button></div>
+  <div id="meter"><i></i></div></div>
   <div id="log"></div>
   <div id="side">
     <div style="display:flex;gap:6px"><button id="mode" title="espace : appui = j'enregistre, 2e appui = j'envoie ; auto : détection de fin de phrase">Mode : espace</button>
@@ -132,7 +137,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
 const $ = id => document.getElementById(id);
 let ws, gen = 0, mic = null, muted = false, micErr = "";
 let micReady = false, starting = false, recKeyT = 0, firstChunkT = null;   // micro autorisé ; ouverture à la demande
-const LABEL = {reading: "📖 à lire", paused: "⏸ en pause", recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
+const LABEL = {reading: "📖 à lire", hold: "⏸ à toi de regarder", paused: "⏸ en pause", recording: "● j'enregistre", listening: "j'écoute", transcribing: "je transcris…", thinking: "je réfléchis…", speaking: "je parle", off: "déconnecté"};
 let serverState = "listening";
 
 // ---------- lecture audio en file ----------
@@ -150,8 +155,53 @@ function pcmBuffer(b64, sr) {
   for (let i = 0; i < n; i++) ch[i] = dv.getInt16(2 * i, true) / 32768;
   return buf;
 }
+// ---------- pause entre les parties de l'explication ----------
+// Une phrase qui change l'affichage (étape d'animation, encadré, carte montrée) ouvre une nouvelle partie :
+// avant elle, la voix attend. Auto : la suite vient après HOLD_MS sans rien toucher (→ fige ; → de nouveau
+// reprend). Manuel : → à chaque fois. Pas d'attente avant la 1re phrase d'une réponse, ni en réécoute.
+const HOLD_MS = 5000, HOLD_CUE = /^(mark|focus|duo|show|step|play|replay|pause)\b/;
+let holdMode = "auto", hold = null;          // hold = {it, frozen, t1, timer}
+try { holdMode = localStorage.getItem("prof-hold") || "auto"; } catch (e) {}
+const needsHold = it => !it.released && (it.cues || []).some(c => HOLD_CUE.test(c) && !/--clear/.test(c))
+  && heard.some(h => h.gen === it.gen);
+function holdUI() {
+  const b = $("holdbtn");
+  $("holdmode").textContent = "Enchaînement : " + (holdMode === "auto" ? "auto" : "manuel");
+  b.disabled = !hold; b.classList.toggle("on", !!hold);
+  if (!hold) { b.textContent = "Suite ▶"; return; }
+  const left = Math.max(0, Math.ceil((hold.t1 - performance.now()) / 1000));
+  b.textContent = holdMode === "auto" && !hold.frozen ? `Suite dans ${left} s (→ : figer)` : "Suite ▶ (→)";
+  show("hold", holdMode === "auto" && !hold.frozen ? `la suite dans ${left} s ; → pour figer` : "→ pour la suite");
+}
+function clearHold() { if (hold) clearInterval(hold.timer); hold = null; holdUI(); }
+function startHold(it) {
+  if (hold && hold.it === it) return;
+  clearHold();
+  hold = {it, frozen: holdMode !== "auto", t1: performance.now() + HOLD_MS, timer: null};
+  if (!hold.frozen) hold.timer = setInterval(() => {
+    if (!hold || hold.frozen) return;
+    if (queue[0] !== hold.it) return clearHold();
+    if (performance.now() >= hold.t1) releaseHold(); else holdUI();
+  }, 250);
+  holdUI();
+}
+function releaseHold() { if (!hold) return; const it = hold.it; clearHold(); it.released = true; playNext(); }
+function holdKey() {                          // → ou bouton : fige le compte à rebours, ou passe à la suite
+  if (!hold) return false;
+  if (holdMode === "auto" && !hold.frozen) { hold.frozen = true; clearInterval(hold.timer); holdUI(); }
+  else releaseHold();
+  return true;
+}
+$("holdbtn").onclick = () => holdKey();
+$("holdmode").onclick = () => {
+  holdMode = holdMode === "auto" ? "manuel" : "auto"; try { localStorage.setItem("prof-hold", holdMode); } catch (e) {}
+  if (hold) { const it = hold.it; clearHold(); startHold(it); } else holdUI();
+};
+holdUI();
 function playNext() {
   if (playing || ducked || userPaused) return;
+  if (queue[0] && needsHold(queue[0])) { startHold(queue[0]); return; }
+  if (hold) clearHold();
   const it = queue.shift();
   if (!it) { cur = null; if (serverState === "listening" || serverState === "done") show("listening"); return; }
   let src;
@@ -189,7 +239,7 @@ function playNext() {
 function stopAll(mark) {
   const last = cur ? cur.text : (queue[0] ? "" : "");
   if (cur) { cur.src.onended = null; try { cur.src.stop(); } catch (e) {} if (mark && cur.el) { cur.el.classList.remove("cur"); cur.el.classList.add("cut"); } }
-  queue = []; cur = null; playing = false;
+  queue = []; cur = null; playing = false; clearHold();
   return last;
 }
 function pruneHeard() {          // garde les phrases des deux dernières réponses
@@ -203,7 +253,8 @@ function silentStop() {           // arrête la phrase en cours sans la marquer 
 function replayFrom(k) {          // rejoue à partir de la k-ième phrase entendue, puis la suite
   if (k < 0 || k >= heard.length) return;
   const items = heard.splice(k);
-  silentStop();
+  items.forEach(i => { i.released = true; });       // réécoute : pas d'attente entre les parties déjà entendues
+  silentStop(); clearHold();
   // la suite déjà entendue + ce qui restait à dire
   queue = items.concat(queue.filter(q => !items.includes(q)));
   if (userPaused) setPaused(false); else playNext();
@@ -300,10 +351,11 @@ function connect() {
       if (RESUME && !resumed && $("cover")) { resumed = true; dbg("reprise automatique"); $("go").click(); }
     } else if (m.t === "state") {
       serverState = m.s;
-      if (!(playing && m.s === "listening") && !recording && !speaking && !userPaused) show(m.s);
+      if (!(playing && m.s === "listening") && !recording && !speaking && !userPaused && !hold) show(m.s);
     } else if (m.t === "gen") {
       gen = m.gen; pLine = null;
       queue = queue.filter(q => q.gen === gen);      // une nouvelle réponse remplace la file de l'ancienne
+      if (hold && !queue.includes(hold.it)) clearHold();
     } else if (m.t === "user") {
       const d = addLine("u", m.text); pLine = null;
       if (m.shows) { const sp = document.createElement("span"); sp.className = "shows"; sp.textContent = ` (en montrant : ${m.shows})`; d.append(sp); }
@@ -318,7 +370,7 @@ function connect() {
       playNext();
     } else if (m.t === "tool") {
       addLine("tool", m.text); pLine = null;
-      if (!playing) show("thinking", m.text);
+      if (!playing && !hold) show("thinking", m.text);
     } else if (m.t === "done") {
       if (m.gen === gen) { serverState = "done"; if (!playing && !queue.length) show("listening"); }
       if (silent && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) $("bigtxt").focus();
@@ -830,6 +882,7 @@ document.addEventListener("keydown", e => {
   if (e.key.toLowerCase() === "s" && plain) { e.preventDefault(); toggleSilent(); return; }
   if (e.key.toLowerCase() === "p" && plain) { e.preventDefault(); setPaused(!userPaused); return; }
   if (e.key === "ArrowLeft" && plain) { e.preventDefault(); rewind(); return; }
+  if (e.key === "ArrowRight" && plain) { if (holdKey()) e.preventDefault(); return; }
   if (!micReady) return;
   if (e.code === "Space" && silent) {          // silencieux : espace mène au champ texte
     e.preventDefault(); $("bigtxt").focus();

@@ -767,6 +767,8 @@ class Prof:
                 parts = shlex.split(c)
             except ValueError:
                 parts = c.split()
+            if parts and parts[0] == "pause":          # ⟦pause⟧ : coupure entre deux parties, gérée par la page
+                continue
             if not parts or parts[0] not in CUE_CMDS:
                 log(f"repère refusé : {c!r}")
                 continue
