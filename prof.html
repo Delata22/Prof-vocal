@@ -88,7 +88,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
   <div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div>
   <div id="holdrow"><button id="holdsame" title="Entre deux encadrés ou étapes d'une même carte : auto = la suite vient après 5 s sans rien toucher (→ fige, → de nouveau reprend) ; manuel = → (ou Suite) pour continuer">Encadrés : auto</button>
   <button id="holdcard" title="Avant de passer à une autre carte : auto = après 5 s sans rien toucher (→ fige) ; manuel = → (ou Suite) pour continuer">Cartes : manuel</button>
-    <button id="holdbtn" disabled title="Flèche droite">Suite ▶</button></div>
+    <button id="holdbtn" disabled title="Flèche droite ; flèche gauche : revenir au début de la partie (2 appuis : la précédente)">Suite ▶</button></div>
   <div id="meter"><i></i></div></div>
   <div id="log"></div>
   <div id="side">
@@ -100,7 +100,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
     <button id="gear" title="Micro, voix, vitesse">⚙ Réglages</button>
 </div>
     <button id="silentbtn" title="Touche S : pas de voix, pas de micro ; tu lis et tu écris">🔊 Voix (S)</button>
-    <div style="display:flex;gap:6px"><button id="rew" title="Flèche gauche : reprendre la phrase ; 2 appuis rapides : la précédente">⏮ Phrase</button>
+    <div style="display:flex;gap:6px"><button id="rew" title="Reprendre la phrase ; 2 appuis rapides : la précédente (flèche gauche : la partie, voir Suite)">⏮ Phrase</button>
     <button id="pause" title="Touche P">⏸ Pause</button></div>
     <span id="micinfo"></span>
     <span id="lat"></span>
@@ -261,10 +261,11 @@ function silentStop() {           // arrête la phrase en cours sans la marquer 
   if (cur) { cur.src.onended = null; try { cur.src.stop(); } catch (e) {} if (cur.el) cur.el.classList.remove("cur"); }
   cur = null; playing = false;
 }
-function replayFrom(k) {          // rejoue à partir de la k-ième phrase entendue, puis la suite
+function replayFrom(k, holds) {   // rejoue à partir de la k-ième phrase entendue, puis la suite
   if (k < 0 || k >= heard.length) return;
   const items = heard.splice(k);
-  items.forEach(i => { i.released = true; });       // réécoute : pas d'attente entre les parties déjà entendues
+  // réécoute d'une phrase : pas d'attente entre les parties déjà entendues ; retour à une partie (holds) : les attentes reviennent
+  items.forEach((i, j) => { i.released = !holds || j === 0; });
   silentStop(); clearHold();
   // la suite déjà entendue + ce qui restait à dire
   queue = items.concat(queue.filter(q => !items.includes(q)));
@@ -278,6 +279,19 @@ function rewind() {
   else if (now - lastRewind < 1500 || now - cur.t0 < 1200) k -= 1;
   lastRewind = now;
   replayFrom(Math.max(0, k));
+}
+// ← : début de la partie en cours (ou de celle qu'on vient d'entendre, pendant une attente) ;
+// appui rapide suivant, ou partie à peine commencée : la précédente. Ses repères sont rejoués : l'affichage revient.
+let lastPartBack = 0;
+function partBack() {
+  const starts = heard.map((h, i) => i === 0 || heard[i - 1].gen !== h.gen
+    || (h.cues || []).some(c => HOLD_CUE.test(c) && !/--clear/.test(c)) ? i : -1).filter(i => i >= 0);
+  if (!starts.length) return;
+  const now = performance.now();
+  let n = starts.length - 1;
+  if (now - lastPartBack < 1500 || (playing && heard.length - 1 === starts[n] && now - cur.t0 < 1200)) n -= 1;
+  lastPartBack = now;
+  replayFrom(starts[Math.max(0, n)], true);
 }
 function setPaused(on) {
   userPaused = on;
@@ -892,7 +906,7 @@ document.addEventListener("keydown", e => {
   const plain = !e.ctrlKey && !e.metaKey && !e.altKey;
   if (e.key.toLowerCase() === "s" && plain) { e.preventDefault(); toggleSilent(); return; }
   if (e.key.toLowerCase() === "p" && plain) { e.preventDefault(); setPaused(!userPaused); return; }
-  if (e.key === "ArrowLeft" && plain) { e.preventDefault(); rewind(); return; }
+  if (e.key === "ArrowLeft" && plain) { e.preventDefault(); partBack(); return; }
   if (e.key === "ArrowRight" && plain) { if (holdKey()) e.preventDefault(); return; }
   if (!micReady) return;
   if (e.code === "Space" && silent) {          // silencieux : espace mène au champ texte

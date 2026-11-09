@@ -67,8 +67,8 @@ Le prof dessine avec `scene/scene.js`, un moteur de scènes dont l'API copie man
 
 - Micro : **espace** = 1er appui j'enregistre (et coupe le prof), 2e appui j'envoie ; Échap annule. Bouton « Mode » pour le mode auto (VAD, fin de phrase détectée seule, envoi forcé à 20 s ou avec « Envoyer »). Traces dans la console (`[prof …]`) et « VAD au repos » dans la barre.
 - Page muette pour les tests : http://localhost:8778/?mute
-- Voix du prof : **P** pause / reprise (exactement où il en était, sans l'interrompre), **←** reprend la phrase en cours (2 appuis rapides : la précédente), clic sur une phrase de la transcription : réécoute à partir d'elle.
-- Explication en parties : avant chaque phrase qui change l'affichage (encadré, étape, autre carte), la voix attend. Deux réglages sous l'état : **Encadrés** (même carte, auto par défaut) et **Cartes** (passage à une autre carte, manuel par défaut). Auto : la suite après 5 s, **→** fige puis reprend ; manuel : **→** ou « Suite » pour continuer.
+- Voix du prof : **P** pause / reprise (exactement où il en était, sans l'interrompre), **⏮ Phrase** reprend la phrase en cours (2 appuis rapides : la précédente), clic sur une phrase de la transcription : réécoute à partir d'elle.
+- Explication en parties : avant chaque phrase qui change l'affichage (encadré, étape, autre carte), la voix attend. Deux réglages sous l'état : **Encadrés** (même carte, auto par défaut) et **Cartes** (passage à une autre carte, manuel par défaut). Auto : la suite après 5 s, **→** fige puis reprend ; manuel : **→** ou « Suite » pour continuer. **←** revient au début de la partie en cours (2 appuis rapides : la précédente), affichage compris.
 - ⚙ Réglages : choix du micro (et filtres écho/bruit/gain du navigateur), voix Piper (siwis, tom, upmc jessica/pierre, gilles, mls), vitesse, « Écouter un exemple ». Réglage de voix gardé dans `voice.json`.
 - Capture du mode espace au taux natif du micro (AudioWorklet), rééchantillonnée en 16 kHz côté serveur (soxr) ; le brut est gardé dans `sessions/<slug>/audio/*.raw<taux>.wav`.
 - Dans la page : bouton « Question test (wav) », ou taper une question + Entrée (interrompt aussi).
