@@ -86,7 +86,8 @@ button.primary{background:var(--acc);color:#fff;border:0}
 <div id="bar">
   <div><button id="backbtn" hidden title="Quitter ce tableau et revenir au choix des tableaux (Ctrl+H). Arrête le prof de ce tableau.">← Tableaux</button>
   <div id="st"><span id="dot"></span><span id="stt">connexion…</span></div><div id="sub"></div>
-  <div id="holdrow"><button id="holdmode" title="Entre deux parties de l'explication (une par étape ou encadré) : auto = la suite vient après 5 s sans rien toucher (→ fige, → de nouveau reprend) ; manuel = → pour chaque suite">Enchaînement : auto</button>
+  <div id="holdrow"><button id="holdsame" title="Entre deux encadrés ou étapes d'une même carte : auto = la suite vient après 5 s sans rien toucher (→ fige, → de nouveau reprend) ; manuel = → (ou Suite) pour continuer">Encadrés : auto</button>
+  <button id="holdcard" title="Avant de passer à une autre carte : auto = après 5 s sans rien toucher (→ fige) ; manuel = → (ou Suite) pour continuer">Cartes : manuel</button>
     <button id="holdbtn" disabled title="Flèche droite">Suite ▶</button></div>
   <div id="meter"><i></i></div></div>
   <div id="log"></div>
@@ -158,26 +159,35 @@ function pcmBuffer(b64, sr) {
 // ---------- pause entre les parties de l'explication ----------
 // Une phrase qui change l'affichage (étape d'animation, encadré, carte montrée) ouvre une nouvelle partie :
 // avant elle, la voix attend. Auto : la suite vient après HOLD_MS sans rien toucher (→ fige ; → de nouveau
-// reprend). Manuel : → à chaque fois. Pas d'attente avant la 1re phrase d'une réponse, ni en réécoute.
+// reprend). Manuel : → à chaque fois. Deux réglages : dans une même carte (encadrés, étapes) et vers une autre carte.
+// Pas d'attente avant la 1re phrase d'une réponse, ni en réécoute.
 const HOLD_MS = 5000, HOLD_CUE = /^(mark|focus|duo|show|step|play|replay|pause)\b/;
-let holdMode = "auto", hold = null;          // hold = {it, frozen, t1, timer}
-try { holdMode = localStorage.getItem("prof-hold") || "auto"; } catch (e) {}
+const holdPref = (k, d) => { try { const v = localStorage.getItem("prof-hold-" + k); return v === "auto" || v === "manuel" ? v : d; } catch (e) { return d; } };
+const holdMode = {same: holdPref("same", "auto"), card: holdPref("card", "manuel")};
+let hold = null, curCard = null;             // hold = {it, frozen, t1, timer, newCard} ; curCard : carte affichée
+function cueCards(c) {                       // cartes visées par un repère : focus/show/duo → toutes, sinon la 1re
+  const a = c.trim().split(/\s+/), ids = a.slice(1).filter(x => !x.startsWith("--") && /^[\w.-]+$/.test(x));
+  if (!ids.length || !HOLD_CUE.test(c) || a[0] === "pause") return [];
+  return ["focus", "show", "duo"].includes(a[0]) ? ids : ids.slice(0, 1);
+}
+const isNewCard = it => (it.cues || []).some(c => cueCards(c).some(id => id !== curCard));
 const needsHold = it => !it.released && (it.cues || []).some(c => HOLD_CUE.test(c) && !/--clear/.test(c))
   && heard.some(h => h.gen === it.gen);
 function holdUI() {
   const b = $("holdbtn");
-  $("holdmode").textContent = "Enchaînement : " + (holdMode === "auto" ? "auto" : "manuel");
+  $("holdsame").textContent = "Encadrés : " + holdMode.same; $("holdcard").textContent = "Cartes : " + holdMode.card;
   b.disabled = !hold; b.classList.toggle("on", !!hold);
   if (!hold) { b.textContent = "Suite ▶"; return; }
   const left = Math.max(0, Math.ceil((hold.t1 - performance.now()) / 1000));
-  b.textContent = holdMode === "auto" && !hold.frozen ? `Suite dans ${left} s (→ : figer)` : "Suite ▶ (→)";
-  show("hold", holdMode === "auto" && !hold.frozen ? `la suite dans ${left} s ; → pour figer` : "→ pour la suite");
+  b.textContent = !hold.frozen ? `Suite dans ${left} s (→ : figer)` : "Suite ▶ (→)";
+  show("hold", !hold.frozen ? `la suite dans ${left} s ; → pour figer` : hold.newCard ? "carte suivante : → pour la suite" : "→ pour la suite");
 }
 function clearHold() { if (hold) clearInterval(hold.timer); hold = null; holdUI(); }
 function startHold(it) {
   if (hold && hold.it === it) return;
   clearHold();
-  hold = {it, frozen: holdMode !== "auto", t1: performance.now() + HOLD_MS, timer: null};
+  const newCard = isNewCard(it);
+  hold = {it, newCard, frozen: holdMode[newCard ? "card" : "same"] === "manuel", t1: performance.now() + HOLD_MS, timer: null};
   if (!hold.frozen) hold.timer = setInterval(() => {
     if (!hold || hold.frozen) return;
     if (queue[0] !== hold.it) return clearHold();
@@ -188,13 +198,13 @@ function startHold(it) {
 function releaseHold() { if (!hold) return; const it = hold.it; clearHold(); it.released = true; playNext(); }
 function holdKey() {                          // → ou bouton : fige le compte à rebours, ou passe à la suite
   if (!hold) return false;
-  if (holdMode === "auto" && !hold.frozen) { hold.frozen = true; clearInterval(hold.timer); holdUI(); }
+  if (!hold.frozen) { hold.frozen = true; clearInterval(hold.timer); holdUI(); }
   else releaseHold();
   return true;
 }
 $("holdbtn").onclick = () => holdKey();
-$("holdmode").onclick = () => {
-  holdMode = holdMode === "auto" ? "manuel" : "auto"; try { localStorage.setItem("prof-hold", holdMode); } catch (e) {}
+for (const [id, k] of [["holdsame", "same"], ["holdcard", "card"]]) $(id).onclick = () => {
+  holdMode[k] = holdMode[k] === "auto" ? "manuel" : "auto"; try { localStorage.setItem("prof-hold-" + k, holdMode[k]); } catch (e) {}
   if (hold) { const it = hold.it; clearHold(); startHold(it); } else holdUI();
 };
 holdUI();
@@ -228,6 +238,7 @@ function playNext() {
   src.start();
   // repères du prof (⟦mark …⟧) : exécutés quand la phrase commence à être jouée — à chaque fois, donc aussi
   // quand on la réécoute ; une phrase jamais jouée (interruption) n'exécute rien
+  for (const c of it.cues || []) { const ids = cueCards(c); if (ids.length) curCard = ids[ids.length - 1]; }
   if (it.cues && it.cues.length) { send({t: "cue", cues: it.cues, idx: it.idx}); dbg("phrase jouée + repères", it.idx, it.cues); }
   show(it.buf ? "speaking" : "reading");
   if (tSpeechEnd !== null && it.idx === 0) {
