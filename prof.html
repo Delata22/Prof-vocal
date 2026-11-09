@@ -105,7 +105,7 @@ button.primary{background:var(--acc);color:#fff;border:0}
       <textarea id="bigtxt" rows="2" placeholder="Écris ta question… (Entrée : envoyer · Maj+Entrée : nouvelle ligne · Ctrl+V / glisser : photo)"></textarea>
       <button id="bigsend" class="primary">Envoyer</button></div>
   </div>
-  <input type="file" id="filepick" accept="image/*" multiple hidden>
+  <input type="file" id="filepick" accept="image/*,application/pdf,.pdf" multiple hidden>
 </div>
 <div id="calib">
   <div class="chead"><b>Calibrer le micro</b> <span id="cinfo"></span><button id="cclose" title="Échap">×</button></div>
@@ -890,7 +890,15 @@ function renderThumbs() {
   $("composer").classList.toggle("has", pendingImgs.length > 0);
   if (pendingImgs.length && !silent) $("sub").textContent = `📎 ${pendingImgs.length} photo(s) : envoyée(s) avec ta prochaine question`;
 }
+const isPdf = f => f && (f.type === "application/pdf" || /\.pdf$/i.test(f.name || ""));
 function addImageFile(f) {
+  if (isPdf(f)) {                 // un PDF : le serveur en fait une image par page, qui reviennent comme des photos
+    if (f.size > 50 * 1024 * 1024) { showErr("PDF trop lourd (50 Mo max)"); return; }
+    const r = new FileReader();
+    r.onload = () => { send({t: "pdf", name: f.name, data: r.result}); $("sub").textContent = `📎 je lis le PDF ${f.name}…`; };
+    r.readAsDataURL(f);
+    return;
+  }
   if (!f || !/^image\//.test(f.type)) return;
   if (f.size > 25 * 1024 * 1024) { showErr("photo trop lourde (25 Mo max)"); return; }
   const r = new FileReader();
@@ -905,7 +913,7 @@ function flushImages() {
 $("attach").onclick = $("attach2").onclick = () => $("filepick").click();
 $("filepick").onchange = () => { [...$("filepick").files].forEach(addImageFile); $("filepick").value = ""; };
 document.addEventListener("paste", e => {
-  const files = [...(e.clipboardData ? e.clipboardData.items : [])].filter(i => i.kind === "file" && /^image\//.test(i.type)).map(i => i.getAsFile());
+  const files = [...(e.clipboardData ? e.clipboardData.items : [])].filter(i => i.kind === "file" && (/^image\//.test(i.type) || i.type === "application/pdf")).map(i => i.getAsFile());
   if (!files.length) return;
   e.preventDefault(); files.forEach(addImageFile);
 });
@@ -938,14 +946,14 @@ window.addEventListener("drop", e => {
   if (!isFileDrag(dt) && !droppedPaths(dt).length) return;      // un simple texte glissé : comportement normal
   e.preventDefault(); e.stopPropagation();
   const files = [...dt.files].filter(f => f.size > 0);
-  const bad = files.filter(f => !/^image\//.test(f.type)).map(f => f.name);
+  const bad = files.filter(f => !/^image\//.test(f.type) && !isPdf(f)).map(f => f.name);
   if (files.length && files.length > bad.length) { files.forEach(addImageFile); }
   else {
     const paths = droppedPaths(dt);
-    if (paths.length) { send({t: "drop_paths", paths}); $("sub").textContent = "📎 je lis l'image…"; dbg("dépôt : chemins", paths); }
-    else if (!bad.length) showErr("rien d'exploitable dans ce dépôt (glisse une image)");
+    if (paths.length) { send({t: "drop_paths", paths}); $("sub").textContent = "📎 je lis le fichier…"; dbg("dépôt : chemins", paths); }
+    else if (!bad.length) showErr("rien d'exploitable dans ce dépôt (glisse une image ou un PDF)");
   }
-  if (bad.length) showErr("pas une image : " + bad.join(", "));
+  if (bad.length) showErr("ni image ni PDF : " + bad.join(", "));
 }, true);
 $("test").onclick = async () => {
   // simule une prise de parole : wav 16 kHz mono -> Float32 -> serveur (comme le VAD)

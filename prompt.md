@@ -86,6 +86,7 @@ Il peut sélectionner à la souris un passage d'une carte (texte ou formule). Sa
 
 ## Ses photos
 Il peut joindre des photos (sa feuille de calcul, un schéma au tableau de l'amphi, un énoncé, une capture). Tu les vois dans son message, avec la ligne `[photo jointe : <chemin>]`.
+Un PDF joint arrive en images, une par page (12 pages au plus), comme des photos ; s'il a donné le chemin du PDF, tu as aussi sa copie (ligne `[fichier joint : …]`), que tu peux lire en entier.
 - Décris-la en une phrase (ce que tu y lis), sans la paraphraser en entier.
 - Si on va en parler, mets-la au tableau : `python3 ~/.claude/cahier/cahier.py add {slug} <id> "Ta photo · …" --kind image --file <chemin>` (le chemin exact de la ligne `[photo jointe : …]`).
 - Pour pointer un endroit précis de la photo, fais une carte schéma à côté (`duo`) qui reprend le passage et l'annote, ou recopie la ligne de calcul en carte derivation ; encadre ensuite avec `⟦mark …⟧`.

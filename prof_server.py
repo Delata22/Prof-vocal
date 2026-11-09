@@ -610,6 +610,13 @@ class Prof:
                         dest, n = d / f"{path.stem}-{n}{path.suffix}", n + 1
                     shutil.copy2(path, dest)
                     out.append(f"[fichier joint : {dest} (copie de {path.name}, tu peux le lire)]")
+                    if path.suffix.lower() == ".pdf":       # et ses pages en images, comme des photos
+                        pages, n = await asyncio.get_running_loop().run_in_executor(None, self.pdf_pages, dest)
+                        for _name, data in pages:
+                            saved = await asyncio.get_running_loop().run_in_executor(None, self.save_image, data)
+                            self.pending_images.append(saved)
+                            self.pending_urls = getattr(self, "pending_urls", []) + ["/images/" + Path(saved[0]).name]
+                        out.append(f"[ses {len(pages)} première(s) page(s) sur {n} en images ci-dessous]")
                 log(f"fichier du message joint : {path}")
             except Exception as e:
                 log("fichier du message refusé :", e)
@@ -625,6 +632,37 @@ class Prof:
         return urls
 
     IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
+    PDF_MAX = 12          # pages d'un PDF envoyées en images au plus (le fichier entier reste lisible par le prof)
+
+    def pdf_pages(self, path):
+        """Un PDF → une image JPEG par page (1600 px de côté au plus, comme une photo) : [(nom, data URL)],
+        et le nombre total de pages. pdftoppm (poppler)."""
+        import subprocess, tempfile
+        path = Path(path)
+        try:
+            info = subprocess.run(["pdfinfo", str(path)], capture_output=True, text=True, timeout=20).stdout
+            n = int(re.search(r"^Pages:\s+(\d+)", info, re.M).group(1))
+        except Exception:
+            raise ValueError(f"{path.name} : PDF illisible")
+        last = min(n, self.PDF_MAX)
+        with tempfile.TemporaryDirectory() as d:
+            r = subprocess.run(["pdftoppm", "-jpeg", "-jpegopt", "quality=88", "-scale-to", "1600", "-f", "1",
+                                "-l", str(last), str(path), f"{d}/p"], capture_output=True, text=True, timeout=120)
+            files = sorted(Path(d).glob("p-*.jpg"), key=lambda f: int(f.stem.split("-")[-1]))
+            if not files:
+                raise ValueError(f"{path.name} : rendu du PDF impossible ({r.stderr.strip()[:120]})")
+            out = [(f"{path.stem} p{i + 1}", "data:image/jpeg;base64," + base64.b64encode(f.read_bytes()).decode())
+                   for i, f in enumerate(files)]
+        log(f"PDF lu : {path} ({len(out)} page(s) sur {n} en images)")
+        return out, n
+
+    async def send_pdf_pages(self, path, label=None):
+        """Pages d'un PDF renvoyées à la page comme des photos déposées (vignettes, jointes à la question suivante)."""
+        pages, n = await asyncio.get_running_loop().run_in_executor(None, self.pdf_pages, path)
+        for name, data in pages:
+            await self.send({"t": "dropped", "name": name, "data": data})
+        if n > len(pages):
+            await self.send({"t": "error", "text": f"{label or Path(path).name} : {n} pages, seules les {len(pages)} premières sont jointes en images"})
 
     def read_dropped(self, uri):
         """Fichier glissé depuis le gestionnaire de fichiers (WebKitGTK ne donne que son chemin) : le serveur le lit
@@ -1089,14 +1127,34 @@ class Prof:
                 elif j["t"] == "drop_paths":       # fichiers glissés depuis le disque (chemins / file://)
                     for uri in j.get("paths", [])[:6]:
                         try:
+                            import urllib.parse
+                            pp = Path(urllib.parse.unquote(uri[7:] if uri.startswith("file://") else uri).strip()).expanduser()
+                            if pp.suffix.lower() == ".pdf":
+                                if not pp.is_file():
+                                    raise ValueError(f"{pp.name} : fichier introuvable")
+                                await self.send_pdf_pages(pp)
+                                continue
                             name, data = await loop.run_in_executor(None, self.read_dropped, uri)
                             await self.send({"t": "dropped", "name": name, "data": data})
                         except Exception as e:
                             log("dépôt refusé :", e)
                             await self.send({"t": "drop_error", "text": str(e)})
+                elif j["t"] == "pdf":              # PDF choisi (📎) ou collé : une image par page, comme des photos
+                    import tempfile
+                    try:
+                        raw = base64.b64decode(j.get("data", "").split(",", 1)[-1])
+                        if len(raw) > 50 * 1024 * 1024:
+                            raise ValueError("PDF trop lourd (50 Mo max)")
+                        with tempfile.TemporaryDirectory() as d:
+                            p = Path(d) / Path(j.get("name") or "document.pdf").name
+                            p.write_bytes(raw)
+                            await self.send_pdf_pages(p)
+                    except Exception as e:
+                        log("PDF refusé :", e)
+                        await self.send({"t": "drop_error", "text": str(e)})
                 elif j["t"] == "images":           # photos à joindre au prochain message de l'élève
                     urls = []
-                    for im in j.get("images", [])[:6]:
+                    for im in j.get("images", [])[:16]:
                         try:
                             saved = await loop.run_in_executor(None, self.save_image, im.get("data", ""))
                         except Exception as e:
