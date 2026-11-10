@@ -260,6 +260,10 @@ class WhiteboardApp(Gtk.Application):
         view.connect("web-process-terminated", self.on_web_crash)
         self.probe = []                              # sonde temporaire des plantages silencieux (voir probe_sample)
         GLib.timeout_add_seconds(2, self.probe_sample)
+        window.connect("notify::is-active", lambda w, _p: self.probe_event("fenêtre " + ("active" if w.is_active() else "inactive")))
+        window.connect("window-state-event", lambda w, e: self.probe_event(
+            "fenêtre " + ("réduite" if e.new_window_state & Gdk.WindowState.ICONIFIED else "affichée"))
+            if e.changed_mask & Gdk.WindowState.ICONIFIED else None)
         # Glisser-déposer d'un fichier : WebKitGTK passe à la page un dépôt VIDE (types sans données, constaté le
         # 2026-10-23). On l'intercepte donc au niveau GTK : on demande la liste d'URI nous-mêmes et on la donne à la page,
         # qui l'envoie au serveur ({t: "drop_paths"}) comme un chemin collé.
@@ -353,10 +357,17 @@ class WhiteboardApp(Gtk.Application):
             print("sonde :", e, file=sys.stderr)
         return True
 
+    def probe_event(self, what):
+        """Événement de fenêtre (premier plan, réduite) intercalé dans la sonde : le plantage les suit-il ?"""
+        self.probe.append({"t": time.time(), "pid": None, "cpu": 0,
+                           "line": f"{time.strftime('%T')}.{int(time.time() * 1000) % 1000:03d} {what}"})
+        self.probe = self.probe[-40:]
+        return False
+
     def probe_dump(self):
         """Au plantage : code de sortie du processus mort (s'il n'est pas encore réclamé) et la dernière minute."""
         lines = []
-        for pid in dict.fromkeys(x["pid"] for x in self.probe[-6:]):
+        for pid in dict.fromkeys(x["pid"] for x in self.probe[-8:] if x["pid"]):
             try:
                 state, _, code = self.probe_stat(pid)
                 how = ("tué par le signal %d" % (code & 0x7f) if code and code & 0x7f else
