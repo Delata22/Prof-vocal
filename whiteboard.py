@@ -258,6 +258,8 @@ class WhiteboardApp(Gtk.Application):
         view.connect("decide-policy", self.on_policy)
         view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or TITLE))
         view.connect("web-process-terminated", self.on_web_crash)
+        self.probe = []                              # sonde temporaire des plantages silencieux (voir probe_sample)
+        GLib.timeout_add_seconds(2, self.probe_sample)
         # Glisser-déposer d'un fichier : WebKitGTK passe à la page un dépôt VIDE (types sans données, constaté le
         # 2026-10-23). On l'intercepte donc au niveau GTK : on demande la liste d'URI nous-mêmes et on la donne à la page,
         # qui l'envoie au serveur ({t: "drop_paths"}) comme un chemin collé.
@@ -302,6 +304,73 @@ class WhiteboardApp(Gtk.Application):
                   " (document.getElementById('sub') || {}).textContent = '📎 je lis l\u2019image…') : null") % json.dumps(paths)
             view.run_javascript(js, None, None, None)
 
+    # --- Sonde TEMPORAIRE (2026-11-10) : le rendu meurt sans message ni rapport apport juste après l'arrivée d'une
+    # carte. Toutes les 2 s, l'état du processus de rendu ; au plantage, la dernière minute et son code de sortie
+    # vont dans crashes.log. À RETIRER une fois la cause trouvée (avec l'appel dans __init__ et dans on_web_crash).
+    def probe_pids(self):
+        out = []
+        for t in Path(f"/proc/{os.getpid()}/task").iterdir():
+            try:
+                kids = (t / "children").read_text().split()
+            except OSError:
+                continue
+            for k in kids:
+                try:
+                    if Path(f"/proc/{k}/comm").read_text().startswith("WebKitWebProc"):
+                        out.append(int(k))
+                except OSError:
+                    pass
+        return out
+
+    @staticmethod
+    def probe_stat(pid):
+        """(état, cpu en ticks, code de sortie) d'après /proc/<pid>/stat ; code de sortie lisible pour un zombie."""
+        st = Path(f"/proc/{pid}/stat").read_text()
+        f = st[st.rindex(")") + 2:].split()             # champs 3 et suivants
+        return f[0], int(f[11]) + int(f[12]), int(f[49]) if len(f) > 49 else None
+
+    def probe_sample(self):
+        try:
+            now = time.time()
+            mem = Path("/proc/meminfo").read_text()
+            avail = int(re.search(r"MemAvailable:\s+(\d+)", mem).group(1)) / 1048576
+            for pid in self.probe_pids():
+                try:
+                    status = Path(f"/proc/{pid}/status").read_text()
+                    g = lambda k: int(re.search(rf"{k}:\s+(\d+)", status).group(1))
+                    state, cpu, _ = self.probe_stat(pid)
+                    nfd = len(os.listdir(f"/proc/{pid}/fd"))
+                except (OSError, AttributeError, ValueError):
+                    continue
+                prev = next((x for x in reversed(self.probe) if x["pid"] == pid), None)
+                pct = 100 * (cpu - prev["cpu"]) / os.sysconf("SC_CLK_TCK") / (now - prev["t"]) if prev else 0
+                self.probe.append({"t": now, "pid": pid, "cpu": cpu, "line":
+                                   f"{time.strftime('%T', time.localtime(now))} pid {pid} {state} "
+                                   f"rss {g('VmRSS') // 1024} Mo (max {g('VmHWM') // 1024}) threads {g('Threads')} "
+                                   f"fd {nfd} cpu {pct:.0f} % ; mémoire dispo {avail:.1f} Go"})
+            self.probe = self.probe[-40:]
+        except Exception as e:                          # la sonde ne doit jamais gêner l'app
+            print("sonde :", e, file=sys.stderr)
+        return True
+
+    def probe_dump(self):
+        """Au plantage : code de sortie du processus mort (s'il n'est pas encore réclamé) et la dernière minute."""
+        lines = []
+        for pid in dict.fromkeys(x["pid"] for x in self.probe[-6:]):
+            try:
+                state, _, code = self.probe_stat(pid)
+                how = ("tué par le signal %d" % (code & 0x7f) if code and code & 0x7f else
+                       "sorti avec le code %d" % (code >> 8) if code is not None else "?")
+                lines.append(f"pid {pid} : état {state}, {how} (statut brut {code})")
+            except (OSError, ValueError):
+                lines.append(f"pid {pid} : déjà disparu de /proc")
+        lines += [x["line"] for x in self.probe[-30:]]
+        try:
+            with open(STATE / "crashes.log", "a") as f:
+                f.write("    sonde (2 s) :\n" + "".join(f"      {l}\n" for l in lines))
+        except OSError:
+            pass
+
     def on_web_crash(self, view, reason):
         """Le processus de rendu est mort (écran noir) : on note le motif et le contexte, puis on recharge
         (au plus 3 fois par minute, sinon une page d'erreur au lieu d'une boucle)."""
@@ -326,6 +395,7 @@ class WhiteboardApp(Gtk.Application):
                 f.write(line + "\n")
         except OSError:
             pass
+        self.probe_dump()                           # sonde temporaire : tout de suite, avant que le mort soit réclamé
         uri = view.get_uri()                        # après le plantage, la vue repasse vite à about:blank
         if len(self.crashes) <= 3:
             GLib.timeout_add(500, lambda: (self.reload_resume(view, uri), False)[1])
