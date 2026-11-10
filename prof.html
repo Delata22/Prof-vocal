@@ -160,7 +160,7 @@ function pcmBuffer(b64, sr) {
 // Une phrase qui change l'affichage (étape d'animation, encadré, carte montrée) ouvre une nouvelle partie :
 // avant elle, la voix attend. Auto : la suite vient après HOLD_MS sans rien toucher (→ fige ; → de nouveau
 // reprend). Manuel : → à chaque fois. Deux réglages : dans une même carte (encadrés, étapes) et vers une autre carte.
-// Pas d'attente avant la 1re phrase d'une réponse, ni en réécoute.
+// Pas d'attente avant le 1er affichage d'une réponse, ni en réécoute.
 const HOLD_MS = 5000, HOLD_CUE = /^(mark|focus|duo|show|step|play|replay|pause)\b/;
 const holdPref = (k, d) => { try { const v = localStorage.getItem("prof-hold-" + k); return v === "auto" || v === "manuel" ? v : d; } catch (e) { return d; } };
 const holdMode = {same: holdPref("same", "auto"), card: holdPref("card", "manuel")};
@@ -171,8 +171,10 @@ function cueCards(c) {                       // cartes visées par un repère : 
   return ["focus", "show", "duo"].includes(a[0]) ? ids : ids.slice(0, 1);
 }
 const isNewCard = it => (it.cues || []).some(c => cueCards(c).some(id => id !== curCard));
+// pas d'attente avant le premier affichage d'une réponse (rien n'a encore été montré), même après une phrase d'intro
+const shows = it => (it.cues || []).some(c => HOLD_CUE.test(c) && !/--clear/.test(c) && !/^pause\b/.test(c));
 const needsHold = it => !it.released && (it.cues || []).some(c => HOLD_CUE.test(c) && !/--clear/.test(c))
-  && heard.some(h => h.gen === it.gen);
+  && heard.some(h => h.gen === it.gen && shows(h));
 function holdUI() {
   const b = $("holdbtn");
   $("holdsame").textContent = "Encadrés : " + holdMode.same; $("holdcard").textContent = "Cartes : " + holdMode.card;
