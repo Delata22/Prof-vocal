@@ -616,12 +616,17 @@ function render() {
 }
 
 async function poll() {
+  // attente longue : le serveur répond dès que le cahier change (?v = version affichée), d'où un tableau
+  // calé sur la voix ; réponse immédiate sans changement (ancien serveur) ou erreur → on réessaie dans 0,7 s
+  const t0 = performance.now();
+  let wait = 700;
   try {
-    const j = await (await fetch(`/api/s/${slug}`)).json();
+    const j = await (await fetch(`/api/s/${slug}?v=${version}`)).json();
     document.getElementById("dot").className = "dot";
-    if (j.version !== version) { version = j.version; data = j; render(); }
+    if (j.version !== version) { version = j.version; data = j; render(); wait = 0; }
+    else if (performance.now() - t0 > 1000) wait = 0;
   } catch (e) { document.getElementById("dot").className = "dot off"; }
-  setTimeout(poll, 700);
+  setTimeout(poll, wait);
 }
 
 async function home() {

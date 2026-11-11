@@ -162,9 +162,30 @@ class H(BaseHTTPRequestHandler):
             return self.send(404, "not found", "text/plain")
         if p.startswith("/api/s/"):
             f = path(p[len("/api/s/"):])
-            if f.exists():
-                return self.send(200, f.read_text())
-            return self.send(404, "{}")
+            if not f.exists():
+                return self.send(404, "{}")
+            # ?v=N : attente longue, on répond dès que la version change (ou au bout de 25 s) ;
+            # le tableau suit ainsi la voix sans délai, sans interroger en boucle
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            txt = f.read_text()
+            if "v" in q:
+                try:
+                    v = int(q["v"][0])
+                except ValueError:
+                    v = None
+                end = time.time() + 25
+                mt = f.stat().st_mtime_ns
+                cur = json.loads(txt).get("version")
+                while v is not None and cur == v and time.time() < end:
+                    time.sleep(0.03)
+                    try:
+                        m2 = f.stat().st_mtime_ns
+                        if m2 != mt:
+                            mt, txt = m2, f.read_text()
+                            cur = json.loads(txt).get("version")
+                    except (OSError, ValueError):
+                        pass
+            return self.send(200, txt)
         self.send(404, "not found", "text/plain")
 
     def do_POST(self):
@@ -185,7 +206,9 @@ class H(BaseHTTPRequestHandler):
 
 # ---------- CLI ----------
 
-def main():
+def main(argv=None, out=print):
+    """argv : arguments (sinon la ligne de commande) ; out : où écrire les réponses (le serveur du prof
+    appelle main directement, sans relancer Python à chaque repère)."""
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("new"); s.add_argument("slug"); s.add_argument("title")
@@ -210,7 +233,7 @@ def main():
     s = sub.add_parser("state"); s.add_argument("slug")
     s = sub.add_parser("open"); s.add_argument("slug")
     sub.add_parser("list"); sub.add_parser("serve")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     if a.cmd == "serve":
         SESS.mkdir(parents=True, exist_ok=True)
@@ -219,30 +242,30 @@ def main():
 
     if a.cmd == "say":
         f = tts(a.text)
-        subprocess.run(["paplay", str(f)]) if shutil.which("paplay") else print(f)
+        subprocess.run(["paplay", str(f)]) if shutil.which("paplay") else out(f)
         return
 
     if a.cmd == "list":
         for d in sorted(SESS.glob("*/cahier.json")):
             j = json.loads(d.read_text())
-            print(f"{d.parent.name}\t{j['title']}\t{len(j['cards'])} cartes")
+            out(f"{d.parent.name}\t{j['title']}\t{len(j['cards'])} cartes")
         return
 
     if a.cmd == "new":
         (SESS / a.slug).mkdir(parents=True, exist_ok=True)
         if path(a.slug).exists():
-            print("existe déjà");
+            out("existe déjà");
         else:
             save(a.slug, {"title": a.title, "created": time.time(), "cards": [],
                           "state": {"pinned": [], "replay": {}}})
         ensure_server()
-        print(f"{URL}/s/{a.slug}")
+        out(f"{URL}/s/{a.slug}")
         return
 
     if a.cmd == "open":
         ensure_server()
         webbrowser.open(f"{URL}/s/{a.slug}")
-        print(f"{URL}/s/{a.slug}")
+        out(f"{URL}/s/{a.slug}")
         return
 
     data = load(a.slug)
@@ -295,10 +318,10 @@ def main():
         if a.clear:
             st["selection"] = None
         else:
-            print(sel_txt(st)); return
+            out(sel_txt(st)); return
     elif a.cmd == "mark" and a.list:
-        print(marks_txt(st))
-        print(sel_txt(st)); return
+        out(marks_txt(st))
+        out(sel_txt(st)); return
     elif a.cmd == "mark":
         if a.clear:      # avec un id : efface seulement les encadrés de cette carte
             st["marks"] = [m for m in st.get("marks", []) if a.id and m["id"] != a.id]
@@ -371,15 +394,15 @@ def main():
         if a.id not in st["main"]:
             focus(a.id)
     elif a.cmd == "state":
-        print(f"mise en page : {st['layout']} ; au centre : {st['main']} ; ouvertes : {st['pinned']}")
-        print(marks_txt(st))
+        out(f"mise en page : {st['layout']} ; au centre : {st['main']} ; ouvertes : {st['pinned']}")
+        out(marks_txt(st))
         for c in data["cards"]:
-            print(f"  {c['id']}\t[{c['kind']}]\t{c['title']}\t(étape {c['step']})")
+            out(f"  {c['id']}\t[{c['kind']}]\t{c['title']}\t(étape {c['step']})")
         return
 
     save(a.slug, data)
     ensure_server()
-    print(f"ok ; {st['layout']} : {st['main']} ; ouvertes : {st['pinned']} ; {marks_txt(st)}")
+    out(f"ok ; {st['layout']} : {st['main']} ; ouvertes : {st['pinned']} ; {marks_txt(st)}")
 
 
 if __name__ == "__main__":

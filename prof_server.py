@@ -24,6 +24,41 @@ import soxr
 from aiohttp import web, WSMsgType
 
 CAHIER = Path(__file__).resolve().parent / "cahier" / "cahier.py"   # le tableau (données : ~/.claude/cahier)
+_cahier_mod = None
+import threading
+_cahier_lock = threading.Lock()
+
+
+def _cahier_load():
+    global _cahier_mod
+    if _cahier_mod is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cahier_tableau", CAHIER)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _cahier_mod = mod
+
+
+def _cahier_preload():
+    with _cahier_lock:
+        try:
+            _cahier_load()
+        except Exception:
+            pass
+
+
+def cahier_run(argv):
+    """Lance une commande du tableau dans ce processus (cahier.main) : pas de Python à démarrer à chaque
+    repère, qui coûtait 0,2 s et jusqu'à 2 s quand la machine est chargée (surlignage en retard sur la voix)."""
+    with _cahier_lock:
+        _cahier_load()
+        out = []
+        try:
+            _cahier_mod.main(list(argv), out=lambda *x: out.append(" ".join(map(str, x))))
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                out.append(str(e.code))
+        return out
 CAHIER_PORT = int(os.environ.get("CAHIER_PORT", 8777))
 DATA = Path(os.environ.get("CAHIER_HOME", Path.home() / ".claude/cahier"))   # données du tableau : séances, voix, lexique
 VOICE = DATA / "voices/fr_FR-siwis-medium.onnx"
@@ -1057,9 +1092,10 @@ class Prof:
                 continue
             parts = self.join_texte(parts)
             t = time.time()
-            p = await asyncio.create_subprocess_exec("python3", str(CAHIER), parts[0], self.a.slug, *parts[1:],
-                                                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-            out = (await p.communicate())[0].decode(errors="replace").strip().splitlines()
+            try:
+                out = await asyncio.to_thread(cahier_run, [parts[0], self.a.slug, *parts[1:]])
+            except Exception as e:
+                out = [f"erreur : {e!r}"]
             log(f"repère exécuté (phrase {idx}) : {c}  [{time.time() - t:.2f} s] {out[-1] if out else ''}")
 
     def write_activity(self, active):
@@ -1528,6 +1564,7 @@ async def main():
     a = ap.parse_args()
 
     prof = Prof(a)
+    threading.Thread(target=_cahier_preload, daemon=True).start()   # 1er repère sans attente de chargement
     await prof.brain.start()
     asyncio.create_task(prof.tts_worker())
 
