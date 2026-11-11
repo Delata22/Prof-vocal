@@ -24,6 +24,7 @@ import soxr
 from aiohttp import web, WSMsgType
 
 CAHIER = Path(__file__).resolve().parent / "cahier" / "cahier.py"   # le tableau (données : ~/.claude/cahier)
+CAHIER_PORT = int(os.environ.get("CAHIER_PORT", 8777))
 DATA = Path(os.environ.get("CAHIER_HOME", Path.home() / ".claude/cahier"))   # données du tableau : séances, voix, lexique
 VOICE = DATA / "voices/fr_FR-siwis-medium.onnx"
 SESS = HERE / "sessions"
@@ -275,11 +276,68 @@ def cut_sentences(buf, flush=False):
     return out, buf
 
 
+# ---------------- choix de l'IA : Claude Code ou Codex ----------------
+
+AI_CONF = HERE / "ia.json"          # réglage de l'élève (⚙ Réglages) ; variables PROF_AI, PROF_CLAUDE_BIN, PROF_CODEX_BIN
+AI_DEFAULT = {"engine": "auto", "claude_bin": "claude", "codex_bin": "codex", "codex_model": ""}
+
+
+def ai_conf():
+    """Défauts, puis variables d'environnement, puis le réglage de la page (ia.json), qui a le dernier mot."""
+    conf = dict(AI_DEFAULT)
+    for k, env in (("engine", "PROF_AI"), ("claude_bin", "PROF_CLAUDE_BIN"), ("codex_bin", "PROF_CODEX_BIN"),
+                   ("codex_model", "PROF_CODEX_MODEL")):
+        if os.environ.get(env):
+            conf[k] = os.environ[env]
+    try:
+        conf.update({k: v for k, v in json.loads(AI_CONF.read_text()).items() if k in AI_DEFAULT})
+    except (OSError, ValueError):
+        pass
+    return conf
+
+
+def find_bin(name):
+    """Chemin d'un programme : tel quel s'il existe, sinon dans le PATH, sinon aux endroits d'installation courants."""
+    import shutil
+    name = os.path.expanduser(str(name or "").strip())
+    if not name:
+        return None
+    if os.sep in name:
+        return name if os.access(name, os.X_OK) else None
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in ("~/.local/bin", "~/.npm-global/bin", "~/.claude/local", "/usr/local/bin"):
+        c = Path(d).expanduser() / name
+        if os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
+def ai_status(conf=None):
+    """Moteur retenu (auto : Claude Code s'il est là, sinon Codex) et ce qui est installé."""
+    conf = conf or ai_conf()
+    have = {"claude": find_bin(conf["claude_bin"]), "codex": find_bin(conf["codex_bin"])}
+    engine = conf["engine"] if conf["engine"] in ("claude", "codex") else ("claude" if have["claude"] or not have["codex"] else "codex")
+    return {**conf, "use": engine, "found": have}
+
+
+def make_brain(a, on_event):
+    st = ai_status()
+    if st["use"] == "codex":
+        return CodexBrain(a.slug, a.topic, a.model, a.effort, on_event, exe=st["found"]["codex"] or st["codex_bin"],
+                          codex_model=st["codex_model"])
+    return Brain(a.slug, a.topic, a.model, a.effort, on_event, exe=st["found"]["claude"] or st["claude_bin"])
+
+
 # ---------------- cerveau : Claude Code headless persistant ----------------
 
 class Brain:
-    def __init__(self, slug, topic, model, effort, on_event):
+    engine = "claude"
+
+    def __init__(self, slug, topic, model, effort, on_event, exe="claude"):
         self.slug, self.topic, self.model, self.effort = slug, topic, model, effort
+        self.exe = exe
         self.on_event = on_event
         self.dir = SESS / slug
         (self.dir / "cards").mkdir(parents=True, exist_ok=True)
@@ -354,11 +412,22 @@ class Brain:
         self.meta["prompt_sections"] = self.new_sections
         self.meta_f.write_text(json.dumps(self.meta))
 
-    async def start(self):
+    def system_prompt(self):
         self.check_prompt_update((HERE / "prompt.md").read_text())
-        system = (HERE / "prompt.md").read_text().replace("{slug}", self.slug).replace("{topic}", self.topic) \
+        return (HERE / "prompt.md").read_text().replace("{slug}", self.slug).replace("{topic}", self.topic) \
             .replace("{pron}", f"python3 {HERE / 'pron.py'}") \
             .replace("{scene_py}", str(HERE / "scene.py")).replace("{cahier_py}", str(CAHIER)).replace("{scene_api}", str(HERE / "scene" / "API.md"))
+
+    async def stop(self):
+        """Arrête le processus (changement d'IA dans les réglages)."""
+        if self.proc and self.proc.returncode is None:
+            try:
+                self.proc.terminate()
+            except ProcessLookupError:
+                pass
+
+    async def start(self):
+        system = self.system_prompt()
         # Un Claude Code complet (décision de l'élève, 2026-11-06 : « toutes les perms classiques d'un Claude normal ») :
         # tous les outils standard, tout le dossier personnel, sa config utilisateur (CLAUDE.md, mémoire, hooks).
         # Permissions « classiques » : mode auto (le classifieur laisse passer le sûr) ; ce qui reste à décider
@@ -368,7 +437,7 @@ class Brain:
         allowed = [f"Bash(python3 {CAHIER}:*)", "Bash(python3 ~/.claude/cahier/cahier.py:*)", "Edit(./cards/**)",
                    "Read(./vocab.txt)", "Edit(./vocab.txt)", f"Bash(python3 {HERE / 'pron.py'}:*)",
                    f"Bash(python3 {HERE / 'scene.py'}:*)", "Read", "Glob", "Grep"]
-        args = ["claude", "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+        args = [self.exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--include-partial-messages",
                 "--setting-sources", "user",            # ses instructions globales, sa mémoire, ses hooks
                 "--model", self.model, "--effort", self.effort,
@@ -489,6 +558,212 @@ class Brain:
 
 
 
+class CodexBrain(Brain):
+    """Le prof avec Codex (CLI `codex`) au lieu de Claude Code : même contrat que Brain pour le reste du serveur.
+
+    Différences : un `codex exec --json` par question (la conversation continue avec `exec resume <fil>`) ; les
+    consignes vont en tête du premier message du fil ; le texte arrive par message entier, pas mot à mot (la voix
+    démarre donc un peu plus tard) ; pas de demandes d'autorisation : le bac à sable de Codex en tient lieu
+    (écriture dans le dossier du board et les données du tableau, réseau local permis pour le tableau).
+    Les options que la version installée de Codex refuse sont retirées et l'appel rejoué."""
+    engine = "codex"
+    OPTIONAL = ["--add-dir", "-c", "--skip-git-repo-check", "--image"]
+    UNSUPPORTED = re.compile(r"unexpected argument|unrecognized|unknown (?:option|flag|argument|command)|"
+                             r"invalid (?:option|value)|no such option", re.I)
+
+    def __init__(self, *a, codex_model="", **kw):
+        super().__init__(*a, **kw)
+        self.codex_model = codex_model
+        self.system = None
+        self.turns = asyncio.Queue()
+        self.running = None          # tâche du tour en cours
+        self.dropped = set()         # options refusées par cette version de codex
+        self.seen = set()
+
+    def check_prompt_update(self, raw):
+        self.prompt_notice = ""      # codex : les consignes à jour sont renvoyées en entier dans le fil (voir _turn)
+
+    @property
+    def fresh(self):
+        return not self.meta.get("codex_thread")
+
+    async def start(self):
+        self.system = self.system_prompt()
+        if not find_bin(self.exe):
+            log(f"codex introuvable ({self.exe}) : installe-le (npm i -g @openai/codex, puis codex login) "
+                "ou donne son chemin dans ⚙ Réglages")
+        if self.running is None:
+            self.running = asyncio.create_task(self._loop())
+        log(f"codex prêt ({self.codex_model or 'modèle par défaut'})",
+            "reprise du fil " + self.meta["codex_thread"] if self.meta.get("codex_thread") else "nouveau fil")
+
+    async def ask(self, gen, text, images=()):
+        if self.running is None:
+            await self.start()
+        self.pending.append(gen)
+        await self.turns.put((gen, text, list(images)))
+
+    async def answer_permission(self, *a, **kw):
+        pass                         # codex exec ne demande rien : le bac à sable décide
+
+    async def interrupt(self):
+        await self.stop()
+
+    async def _loop(self):
+        while True:
+            gen, text, images = await self.turns.get()
+            try:
+                await self._turn(gen, text, images)
+            except Exception as e:
+                log("codex : erreur", repr(e)[:300])
+            if self.pending and self.pending[0] == gen:
+                self.pending.pop(0)
+            await self.on_event("result", gen, {"subtype": "success"})
+
+    def _cmd(self, text, imgs, resume):
+        args = [self.exe, "exec", "--json", "--skip-git-repo-check",
+                "--sandbox", os.environ.get("PROF_CODEX_SANDBOX", "workspace-write"),
+                "-c", "sandbox_workspace_write.network_access=true",
+                "-c", f'model_reasoning_effort="{self.effort}"',
+                "--add-dir", str(CAHIER.parent), "--add-dir", str(DATA)]
+        if self.codex_model:
+            args += ["--model", self.codex_model]
+        for f in imgs:
+            args += ["--image", f]
+        if resume:
+            args += ["resume", self.meta["codex_thread"]]
+        args.append(text)
+        for flag in self.dropped:                 # retire l'option et sa valeur
+            while flag in args:
+                i = args.index(flag)
+                del args[i:i + (1 if flag == "--skip-git-repo-check" else 2)]
+        return args
+
+    async def _turn(self, gen, text, images):
+        orig, imgs = text, []
+        if images:
+            d = self.dir / ".codex-images"
+            d.mkdir(exist_ok=True)
+            for k, (mt, b64) in enumerate(images):
+                f = d / f"{int(time.time() * 1000)}-{k}.{mt.split('/')[-1].replace('jpeg', 'jpg')}"
+                f.write_bytes(base64.b64decode(b64))
+                imgs.append(str(f))
+        import hashlib
+        resume = bool(self.meta.get("codex_thread"))
+        system = self.system or self.system_prompt()
+        h = hashlib.sha1(system.encode()).hexdigest()
+        if not resume or self.meta.get("codex_prompt") != h:      # 1er message du fil, ou consignes modifiées
+            head = "CONSIGNES PERMANENTES (tu es le prof de cette séance)" if not resume else \
+                   "CONSIGNES MISES À JOUR (elles remplacent les précédentes et priment sur tes habitudes de ce fil)"
+            text = f"{head}\n{system}\n\n----------------------------------------------------------------\n\n{text}"
+            self.meta["codex_prompt"] = h
+            self.meta_f.write_text(json.dumps(self.meta))
+        for _ in range(len(self.OPTIONAL) + 2):
+            code, err, got = await self._run(gen, self._cmd(text, imgs, resume))
+            if code == 0 or got or gen not in self.pending:
+                return
+            bad = next((f for f in self.OPTIONAL if f not in self.dropped and self.UNSUPPORTED.search(err)
+                        and f.lstrip("-").split("-")[0] in err.lower()), None)
+            if bad is None and self.UNSUPPORTED.search(err):
+                bad = next((f for f in self.OPTIONAL if f not in self.dropped), None)
+            if bad:
+                log(f"codex refuse {bad} : appel rejoué sans")
+                self.dropped.add(bad)
+                continue
+            if resume:                            # fil introuvable : on en ouvre un nouveau
+                log("codex : reprise du fil impossible, nouveau fil :", err.strip()[:200])
+                self.meta.pop("codex_thread", None)
+                self.meta_f.write_text(json.dumps(self.meta))
+                return await self._turn(gen, orig, images)
+            break
+        log("codex : échec", err.strip()[:400])
+        await self.on_event("text", gen, "Codex n'a pas pu répondre ; le détail est dans le journal du serveur.\n")
+        await self.on_event("block_end", gen, None)
+
+    async def _run(self, gen, args):
+        env = dict(os.environ)
+        env.pop("LD_LIBRARY_PATH", None)
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                *args, cwd=self.dir, env=env, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024, start_new_session=True)
+        except OSError as e:
+            return 127, str(e), False
+        err = []
+
+        async def drain():
+            async for line in self.proc.stderr:
+                err.append(line.decode(errors="replace"))
+        et = asyncio.create_task(drain())
+        got = False
+        async for line in self.proc.stdout:
+            try:
+                j = json.loads(line)
+            except ValueError:
+                continue
+            got = await self._event(gen, j) or got
+        code = await self.proc.wait()
+        await et
+        return code, "".join(err)[-3000:], got
+
+    async def _event(self, gen, j):
+        """Un évènement de `codex exec --json` ; True si une réponse est arrivée. Deux formats connus : récent
+        ({type: item.completed, item: {type: agent_message, text}}) et ancien ({msg: {type: agent_message, …}})."""
+        ty = j.get("type", "")
+        if ty == "thread.started" or (j.get("msg", {}).get("type") == "session_configured"):
+            tid = j.get("thread_id") or j.get("msg", {}).get("session_id")
+            if tid and tid != self.meta.get("codex_thread"):
+                self.meta["codex_thread"] = tid
+                self.meta_f.write_text(json.dumps(self.meta))
+            return False
+        item = j.get("item") if isinstance(j.get("item"), dict) else None
+        if item is None and isinstance(j.get("msg"), dict):           # ancien format
+            m = j["msg"]
+            mt = m.get("type", "")
+            if mt == "agent_message" and m.get("message"):
+                item, ty = {"type": "agent_message", "text": m["message"]}, "item.completed"
+            elif mt == "exec_command_begin":
+                cmd = m.get("command")
+                item, ty = {"type": "command_execution", "command": " ".join(cmd) if isinstance(cmd, list) else cmd}, "item.started"
+            elif mt == "exec_command_end":
+                item, ty = {"type": "command_execution", "aggregated_output": m.get("aggregated_output") or m.get("stdout", "")}, "item.completed"
+            elif mt in ("error", "stream_error"):
+                log("codex :", str(m.get("message"))[:300])
+        if item is None:
+            if ty in ("turn.failed", "error"):
+                log("codex :", json.dumps(j, ensure_ascii=False)[:400])
+            return False
+        it = item.get("type", "")
+        if it == "agent_message" and ty == "item.completed" and item.get("text"):
+            await self.on_event("text", gen, item["text"].rstrip() + "\n")
+            await self.on_event("block_end", gen, None)
+            return True
+        if it == "command_execution":
+            if ty == "item.started":
+                await self.on_event("tool_start", gen, "Bash")
+                cmd = item.get("command") or ""
+                cmd = re.sub(r"^(?:/\S+/)?(?:ba)?sh -l?c ['\"]?(.*?)['\"]?$", r"\1", cmd)   # « bash -lc '…' » → la commande
+                await self.on_event("tool", gen, cmd)
+            elif ty == "item.completed":
+                await self.on_event("tool_result", gen, str(item.get("aggregated_output") or "")[:300])
+        elif it == "file_change" and ty in ("item.started", "item.completed"):
+            key = item.get("id") or id(item)
+            if key not in self.seen:              # annoncé une fois (selon la version : au début ou à la fin)
+                self.seen.add(key)
+                names = ", ".join(Path(c.get("path", "?")).name for c in item.get("changes", []) if isinstance(c, dict))
+                await self.on_event("tool_start", gen, "Write")
+                await self.on_event("tool", gen, "prépare " + (names or "un fichier"))
+        return False
+
+    async def stop(self):
+        if self.proc and self.proc.returncode is None:
+            try:
+                os.killpg(self.proc.pid, 15)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+
 # ---------------- chef d'orchestre ----------------
 
 class Prof:
@@ -504,7 +779,7 @@ class Prof:
         self.history = []            # [(qui, texte)]
         self.ears = Ears(a.whisper, a.compute, a.topic, a.slug, a.beam)
         self.voice = Voice()
-        self.brain = Brain(a.slug, a.topic, a.model, a.effort, self.on_brain)
+        self.brain = make_brain(a, self.on_brain)
         self.gen_text = ""
         self.cues = []
         self.outbox, self.gen_done = [], False   # phrases envoyées, pas encore jouées par la page
@@ -902,6 +1177,27 @@ class Prof:
             await self.send({"t": "perm_done", "id": rid})
 
     # --- événements du cerveau ---
+    async def set_ai(self, j):
+        """Nouveau réglage d'IA : enregistré ; si le moteur ou son chemin change, le cerveau est remplacé
+        (chaque moteur garde son propre fil de conversation pour ce board)."""
+        conf = ai_conf()
+        conf.update({k: str(j[k]).strip() for k in AI_DEFAULT if k in j and j[k] is not None})
+        if conf["engine"] not in ("auto", "claude", "codex"):
+            conf["engine"] = "auto"
+        AI_CONF.write_text(json.dumps(conf, ensure_ascii=False))
+        st = ai_status(conf)
+        want = st["found"][st["use"]] or st[st["use"] + "_bin"]
+        if st["use"] != self.brain.engine or want != self.brain.exe or \
+                (st["use"] == "codex" and st["codex_model"] != self.brain.codex_model):
+            old = self.brain
+            if old.busy:
+                await old.interrupt()
+            await old.stop()
+            self.brain = make_brain(self.a, self.on_brain)
+            await self.brain.start()
+            log(f"IA : {self.brain.engine} ({self.brain.exe})")
+        await self.send({"t": "ai", "ai": {**st, "running": self.brain.engine}})
+
     async def on_brain(self, kind, gen, data):
         if kind == "permission":
             return await self.on_permission(gen, data)
@@ -1037,7 +1333,7 @@ class Prof:
         log("page connectée")
         await self.send({"t": "info", "slug": self.a.slug, "topic": self.a.topic, "model": self.a.model,
                          "history": self.history[-12:], "voices": self.voice.catalog(), "voice": self.voice.current(),
-                         "silent": self.silent})
+                         "silent": self.silent, "cahier_port": CAHIER_PORT, "ai": {**ai_status(), "running": self.brain.engine}})
         next_sr = 16000          # taux du prochain segment binaire (annoncé par {t: audio, sr})
         next_hdr = {}            # en-tête complet du prochain segment ({target: "calib", …})
         for _req, pm in self.perms.values():      # demandes d'autorisation encore en attente
@@ -1112,6 +1408,8 @@ class Prof:
                     next_sr, next_hdr = int(j.get("sr", 16000)), j
                     if j.get("mic"):
                         log(f"micro : {j['mic']} ({next_sr} Hz)")
+                elif j["t"] == "ai":                # ⚙ Réglages : IA (auto / Claude Code / Codex) et chemins
+                    await self.set_ai(j)
                 elif j["t"] == "voice":
                     await loop.run_in_executor(None, self.voice.set, j["voice"], j.get("speaker"), j.get("speed", 1.0))
                     log("voix :", self.voice.current())
@@ -1244,7 +1542,7 @@ async def main():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", a.port).start()
-    log(f"Prof prêt : http://localhost:{a.port}/  (tableau : http://localhost:8777/s/{a.slug})")
+    log(f"Prof prêt : http://localhost:{a.port}/  (tableau : http://localhost:{CAHIER_PORT}/s/{a.slug})")
     await asyncio.Event().wait()
 
 

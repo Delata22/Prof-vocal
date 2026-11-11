@@ -40,8 +40,9 @@ Le réglage retenu se choisit par variables : `PROF_WHISPER` (large-v3-turbo), `
 
 ## Installer
 
-Testé sous Ubuntu 24.04. Il faut [Claude Code](https://claude.com/claude-code) installé et connecté (commande `claude` :
-c'est lui, le prof, sur ton propre compte), et [uv](https://docs.astral.sh/uv/).
+Testé sous Ubuntu 24.04. Il faut une IA en ligne de commande, installée et connectée : [Claude Code](https://claude.com/claude-code)
+(`claude`) ou [Codex](https://github.com/openai/codex) (`npm i -g @openai/codex`, puis `codex login`). C'est elle, le prof,
+sur ton propre compte. Il faut aussi [uv](https://docs.astral.sh/uv/).
 
 ```bash
 sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 poppler-utils curl
@@ -65,6 +66,11 @@ Puis l'application (entrée « Whiteboard » dans le menu, commande `whiteboard`
 
 - **Carte graphique** : Whisper tourne sur une carte NVIDIA (~1,3 Go de mémoire). Sans elle, il passe tout seul sur le
   processeur, plus lentement ; prends alors un modèle plus petit : `PROF_WHISPER=small`.
+- **IA du prof** : ⚙ Réglages → « IA du prof » : Automatique (Claude Code s'il est installé, sinon Codex), Claude Code
+  ou Codex, avec le chemin de chaque programme s'il n'est pas dans le PATH, et le modèle de Codex. Le changement est
+  immédiat, le tableau reste ; chaque IA garde son propre fil de conversation par board. Le prof a été rodé avec
+  Claude : avec Codex, sa voix démarre un peu plus tard (Codex rend ses messages entiers, pas mot à mot), et il
+  travaille dans le bac à sable de Codex (`PROF_CODEX_SANDBOX`, défaut `workspace-write`, réseau local permis).
 - **Données** : séances, voix et lexique dans `~/.claude/cahier` (`CAHIER_HOME` pour changer) ; le tableau sur le port
   8777 (`CAHIER_PORT`).
 - **À adapter** : `prompt.md` (la façon d'enseigner du prof, écrite pour un étudiant de master en vision / maths),

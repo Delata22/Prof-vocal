@@ -73,6 +73,8 @@ button.primary{background:var(--acc);color:#fff;border:0}
 #soundbar{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:12;background:var(--think);color:#fff;padding:8px 16px;border-radius:10px;font-weight:600;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.3)}
 #micinfo{color:var(--muted);font-size:12px;max-width:260px;text-align:right}
 #settings{display:none;position:fixed;right:14px;bottom:calc(30vh + 8px);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;z-index:8;flex-direction:column;gap:10px;width:340px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+#settings input[type=text]{font:inherit;font-size:13px;padding:4px 6px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+#aiinfo{font-size:12px;color:var(--muted)} #aiinfo.bad{color:var(--red)}
 #settings.open{display:flex} #settings label{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted)}
 #settings label.row{flex-direction:row;align-items:center;gap:6px}
 #settings select{font:inherit;font-size:14px;padding:4px;border-radius:7px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
@@ -129,6 +131,12 @@ button.primary{background:var(--acc);color:#fff;border:0}
   <label>Vitesse <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1"> <span id="speedv">× 1.00</span></label>
   <button id="sample">Écouter un exemple</button>
   <button id="calibbtn" title="Lire 12 phrases (avec puis sans filtres) pour mesurer la reconnaissance vocale">🎙 Calibrer le micro</button>
+  <label>IA du prof <select id="aisel"><option value="auto">Automatique (Claude Code s'il est installé, sinon Codex)</option>
+    <option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+  <label>Chemin de claude <input type="text" id="claudebin" placeholder="claude (cherché dans le PATH)"></label>
+  <label>Chemin de codex <input type="text" id="codexbin" placeholder="codex (cherché dans le PATH)"></label>
+  <label>Modèle de codex <input type="text" id="codexmodel" placeholder="vide : celui de ta config Codex"></label>
+  <span id="aiinfo"></span>
 </div>
 <div id="perms"></div>
 <div id="soundbar" hidden>🔇 Le son du prof est en pause après le rechargement : clique n'importe où (ou appuie sur une touche) pour le réactiver.</div>
@@ -367,10 +375,12 @@ function connect() {
     if (m.t === "drop_error") { showErr(m.text); return; }
     if (m.t === "sample") { playSample(m); return; }
     if (m.t === "silent") { setSilentUI(m.on); return; }
+    if (m.t === "ai") { fillAI(m.ai); return; }
     if (m.t === "info") {
+      fillAI(m.ai);
       SLUG = m.slug;
       fillVoices(m.voices, m.voice); setSilentUI(!!m.silent);
-      if (!$("board").src) $("board").src = `http://localhost:8777/s/${m.slug}`;
+      if (!$("board").src) $("board").src = `http://localhost:${m.cahier_port || 8777}/s/${m.slug}`;
       document.title = `Prof · ${m.topic}`;
       $("log").innerHTML = ""; pLine = null;
       for (const [who, t] of m.history) who === "élève" ? (addLine("u", t), pLine = null) : proseSpan(t);
@@ -826,6 +836,28 @@ setInterval(() => {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({t: "activity", active: !!active && !document.hidden}));
 }, 4000);
 $("gear").onclick = () => $("settings").classList.toggle("open");
+// IA du prof : Claude Code ou Codex (réglage gardé par le serveur dans ia.json ; changer d'IA garde le tableau,
+// chaque IA a son propre fil de conversation pour ce board)
+function fillAI(ai) {
+  if (!ai) return;
+  $("aisel").value = ai.engine; $("claudebin").value = ai.claude_bin === "claude" ? "" : ai.claude_bin;
+  $("codexbin").value = ai.codex_bin === "codex" ? "" : ai.codex_bin; $("codexmodel").value = ai.codex_model || "";
+  const name = {claude: "Claude Code", codex: "Codex"}, path = ai.found[ai.running];
+  const missing = ["claude", "codex"].filter(k => !ai.found[k]).map(k => name[k]);
+  $("aiinfo").textContent = `En service : ${name[ai.running]}` + (path ? ` (${path})` : " : programme introuvable, vérifie le chemin")
+    + (missing.length && path ? ` · introuvable : ${missing.join(", ")}` : "");
+  $("aiinfo").classList.toggle("bad", !path);
+}
+function sendAI() {
+  send({t: "ai", engine: $("aisel").value, claude_bin: $("claudebin").value.trim() || "claude",
+        codex_bin: $("codexbin").value.trim() || "codex", codex_model: $("codexmodel").value.trim()});
+  $("aiinfo").textContent = "…";
+}
+$("aisel").onchange = sendAI;
+for (const id of ["claudebin", "codexbin", "codexmodel"]) {
+  $(id).onchange = sendAI;
+  $(id).onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); $(id).blur(); } };
+}
 
 // casque Bluetooth : « casque-mode appel » AVANT d'ouvrir le micro (en mode musique, son micro n'existe pas)
 let headsetWait = null;
