@@ -24,12 +24,13 @@ import soxr
 from aiohttp import web, WSMsgType
 
 CAHIER = Path(__file__).resolve().parent / "cahier" / "cahier.py"   # le tableau (données : ~/.claude/cahier)
-VOICE = Path.home() / ".claude/cahier/voices/fr_FR-siwis-medium.onnx"
+DATA = Path(os.environ.get("CAHIER_HOME", Path.home() / ".claude/cahier"))   # données du tableau : séances, voix, lexique
+VOICE = DATA / "voices/fr_FR-siwis-medium.onnx"
 SESS = HERE / "sessions"
 LOG = HERE / "latency.log"
 CASQUE = Path.home() / ".local/bin/casque-mode"        # bascule A2DP / HFP du casque Bluetooth (géré ailleurs)
 CASQUE_MARK = Path.home() / ".local/state/whiteboard/casque-appel-par-prof"   # c'est nous qui l'avons mis en appel
-LEXIQUE = Path.home() / ".claude/cahier/prononciation.json"   # partagé avec le cahier (cahier.py prononce)
+LEXIQUE = DATA / "prononciation.json"   # partagé avec le cahier (cahier.py prononce)
 
 
 class Watched:
@@ -81,7 +82,14 @@ class Ears:
         from faster_whisper import WhisperModel
         t = time.time()
         self.beam = beam
-        self.m = WhisperModel(model, device="cuda", compute_type=compute)
+        device = os.environ.get("PROF_WHISPER_DEVICE", "cuda")
+        try:
+            self.m = WhisperModel(model, device=device, compute_type=compute)
+        except Exception as e:                # pas de carte NVIDIA (ou CUDA absent) : processeur, plus lent
+            if device == "cpu":
+                raise
+            log(f"whisper : {device} indisponible ({str(e).splitlines()[0][:120]}) ; repli sur le processeur (int8)")
+            self.m = WhisperModel(model, device="cpu", compute_type="int8")
         self.topic = topic
         # vocabulaire : commun (vocab.txt du projet) + propre au cours (sessions/<slug>/vocab.txt)
         self.vocabs = [Watched(HERE / "vocab.txt", parse_vocab), Watched(SESS / slug / "vocab.txt", parse_vocab)]

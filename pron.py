@@ -5,7 +5,7 @@
   pron.py list"""
 import json, os, sys
 from pathlib import Path
-F = Path.home() / ".claude/cahier/prononciation.json"
+F = Path(os.environ.get("CAHIER_HOME", Path.home() / ".claude/cahier")) / "prononciation.json"
 lex = json.loads(F.read_text()) if F.exists() else {}
 cmd, args = (sys.argv[1] if len(sys.argv) > 1 else "list"), sys.argv[2:]
 if cmd == "add" and len(args) == 2:

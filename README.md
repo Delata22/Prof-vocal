@@ -36,13 +36,41 @@ Les enregistrements bruts vont dans `calib/<date>_<micro>/`. Ensuite :
 ```
 
 Le réglage retenu se choisit par variables : `PROF_WHISPER` (large-v3-turbo), `PROF_WHISPER_COMPUTE`
-(int8_float16), `PROF_WHISPER_BEAM` (5).
+(int8_float16), `PROF_WHISPER_BEAM` (5), `PROF_WHISPER_DEVICE` (cuda ; repli automatique sur cpu).
 
 ## Installer
 
+Testé sous Ubuntu 24.04. Il faut [Claude Code](https://claude.com/claude-code) installé et connecté (commande `claude` :
+c'est lui, le prof, sur ton propre compte), et [uv](https://docs.astral.sh/uv/).
+
 ```bash
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-webkit2-4.1 poppler-utils curl
+git clone https://github.com/Delata22/Prof-vocal.git && cd Prof-vocal
 uv venv -p 3.12 .venv && uv pip install -p .venv/bin/python -r requirements.txt
 ```
+
+La voix du prof (Piper, en français), dans le dossier des données du tableau :
+
+```bash
+mkdir -p ~/.claude/cahier/voices && cd ~/.claude/cahier/voices
+for f in fr_FR-siwis-medium.onnx fr_FR-siwis-medium.onnx.json; do
+  curl -LO "https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/siwis/medium/$f"; done
+```
+
+Puis l'application (entrée « Whiteboard » dans le menu, commande `whiteboard`) :
+
+```bash
+/usr/bin/python3 install_desktop.py
+```
+
+- **Carte graphique** : Whisper tourne sur une carte NVIDIA (~1,3 Go de mémoire). Sans elle, il passe tout seul sur le
+  processeur, plus lentement ; prends alors un modèle plus petit : `PROF_WHISPER=small`.
+- **Données** : séances, voix et lexique dans `~/.claude/cahier` (`CAHIER_HOME` pour changer) ; le tableau sur le port
+  8777 (`CAHIER_PORT`).
+- **À adapter** : `prompt.md` (la façon d'enseigner du prof, écrite pour un étudiant de master en vision / maths),
+  `vocab.txt` (les termes que Whisper doit reconnaître).
+- **Facultatif** : `casque-mode` (bascule d'un casque Bluetooth en mode appel) et Regulator (suivi du temps de
+  travail) sont des outils personnels ; sans eux, l'app marche pareil.
 
 ## Lancer
 
@@ -94,3 +122,7 @@ Le prof dessine avec `scene/scene.js`, un moteur de scènes dont l'API copie man
   `--setting-sources ""` : pas de hooks utilisateur. Outils : `Bash(python3 <dépôt>/cahier/cahier.py:*)`
   et `Write` limité à `sessions/<slug>/cards/` (le heredoc avec du LaTeX est refusé par le filtre de permissions).
 - Le cahier n'est pas modifié.
+
+## Licence
+
+MIT, voir [LICENSE](LICENSE).
