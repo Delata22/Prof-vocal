@@ -204,6 +204,25 @@ class H(BaseHTTPRequestHandler):
         self.send(404, "{}")
 
 
+def reload_on_change():
+    """Le serveur du tableau tourne à part (Whiteboard ne le relance pas) : quand cahier.py change (mise à jour
+    du dépôt), il se relance tout seul avec le nouveau code. Le tableau se reconnecte de lui-même."""
+    me = Path(__file__).resolve()
+    t0 = me.stat().st_mtime_ns
+    while True:
+        time.sleep(2)
+        try:
+            if me.stat().st_mtime_ns != t0:
+                time.sleep(0.5)                       # laisse finir l'écriture du fichier
+                compile(me.read_text(), str(me), "exec")   # code cassé : on garde l'ancien serveur
+                print(time.strftime("%H:%M:%S"), "cahier.py modifié : le serveur se relance", file=sys.stderr, flush=True)
+                os.execv(sys.executable, [sys.executable, str(me), "serve"])
+        except SyntaxError:
+            t0 = me.stat().st_mtime_ns
+        except OSError:
+            pass
+
+
 # ---------- CLI ----------
 
 def main(argv=None, out=print):
@@ -237,7 +256,10 @@ def main(argv=None, out=print):
 
     if a.cmd == "serve":
         SESS.mkdir(parents=True, exist_ok=True)
-        ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+        srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+        import threading
+        threading.Thread(target=reload_on_change, daemon=True).start()
+        srv.serve_forever()
         return
 
     if a.cmd == "say":
