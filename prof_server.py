@@ -159,7 +159,10 @@ class Ears:
         prompt = self.prompt_for(maths) if use_prompt else None
         segs, _ = self.m.transcribe(audio, language="fr", beam_size=beam or self.beam, vad_filter=False,
                                     condition_on_previous_text=False, initial_prompt=prompt)
-        segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0]
+        # filtre segment par segment : une hallucination sur la fin silencieuse (« Sous-titrage ST' 501 »
+        # après 60 s de vraie parole) ne doit retirer que ce segment, pas toute la transcription
+        segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0
+                and not self.HALLU.search(s.text) and not self.garbage(s.text)]
         txt = " ".join(s.text.strip() for s in segs).strip()
         # Whisper recopie le prompt sur un son trop court ; mais une vraie phrase peut ressembler à un bout
         # du prompt (« soit n un entier ») : on ne rejette qu'une copie d'au moins la moitié du prompt.
