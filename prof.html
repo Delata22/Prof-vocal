@@ -883,7 +883,20 @@ async function wakeAudio() {
 function soundRetry() { ctx.resume().then(() => { $("soundbar").hidden = ctx.state === "running"; playNext(); }).catch(() => {}); }
 document.addEventListener("pointerdown", () => { if (ctx.state !== "running") soundRetry(); }, true);
 document.addEventListener("keydown", () => { if (ctx.state !== "running") soundRetry(); }, true);
-ctx.onstatechange = () => { if ($("soundbar")) $("soundbar").hidden = ctx.state === "running" || silent; };
+// Son figé par le système (casque Bluetooth qui change de mode, plantage du rendu…) au milieu d'une phrase :
+// au retour du son, la fin de phrase repartait telle quelle, parfois 1 h 40 plus tard. Au-delà de 30 s de
+// coupure (hors pause voulue), la réponse en cours est périmée : on l'abandonne (réécoutable d'un clic).
+let ctxStop = null;   // {t, user} : quand le son s'est arrêté, et si c'était une pause voulue
+ctx.onstatechange = () => {
+  if ($("soundbar")) $("soundbar").hidden = ctx.state === "running" || silent;
+  if (ctx.state !== "running") { if (!ctxStop) ctxStop = {t: performance.now(), user: userPaused}; return; }
+  const s = ctxStop; ctxStop = null;
+  if (!s || s.user || performance.now() - s.t < 30000 || !(playing || queue.length)) return;
+  const lastIt = queue.length ? queue[queue.length - 1] : cur;
+  dbg(`son coupé ${Math.round((performance.now() - s.t) / 1000)} s : fin de réponse abandonnée`);
+  if (lastIt) send({t: "played", gen: lastIt.gen, idx: lastIt.idx});   // le serveur ne la renverra pas
+  stopAll(true); show("listening");
+};
 $("go").onclick = async () => {
   if (goStarted) return;
   goStarted = true;
