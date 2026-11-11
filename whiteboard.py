@@ -260,6 +260,7 @@ class WhiteboardApp(Gtk.Application):
         view.connect("web-process-terminated", self.on_web_crash)
         self.probe = []                              # sonde temporaire des plantages silencieux (voir probe_sample)
         GLib.timeout_add_seconds(2, self.probe_sample)
+        GLib.timeout_add(500, self.no_realtime)
         window.connect("notify::is-active", lambda w, _p: self.probe_event("fenêtre " + ("active" if w.is_active() else "inactive")))
         window.connect("window-state-event", lambda w, e: self.probe_event(
             "fenêtre " + ("réduite" if e.new_window_state & Gdk.WindowState.ICONIFIED else "affichée"))
@@ -311,6 +312,33 @@ class WhiteboardApp(Gtk.Application):
     # --- Sonde TEMPORAIRE (2026-11-10) : le rendu meurt sans message ni rapport apport juste après l'arrivée d'une
     # carte. Toutes les 2 s, l'état du processus de rendu ; au plantage, la dernière minute et son code de sortie
     # vont dans crashes.log. À RETIRER une fois la cause trouvée (avec l'appel dans __init__ et dans on_web_crash).
+    def no_realtime(self):
+        """Les « plantages » du rendu (2026-11) : WebKit fait passer certains fils du processus de rendu en
+        temps réel (rtkit : EventDispatcher, AudioWorklet). Un fil temps réel qui calcule plus de 200 ms
+        d'affilée (RLIMIT_RTTIME) est tué par le noyau avec SIGKILL, sans trace (gros rendu après l'ajout
+        d'une carte, défilement, machine chargée). On les remet en ordonnancement normal dès qu'ils
+        apparaissent (SCHED_RESET_ON_FORK conservé : rtkit le pose et on n'a pas le droit de l'enlever)."""
+        seen = self.__dict__.setdefault("rt_fixed", set())
+        for pid in self.probe_pids():
+            try:
+                tasks = os.listdir(f"/proc/{pid}/task")
+            except OSError:
+                continue
+            for t in tasks:
+                try:
+                    st = Path(f"/proc/{pid}/task/{t}/stat").read_text()
+                    if st[st.rfind(")") + 2:].split()[38] not in ("1", "2"):    # SCHED_FIFO / SCHED_RR
+                        continue
+                    os.sched_setscheduler(int(t), os.SCHED_OTHER | os.SCHED_RESET_ON_FORK, os.sched_param(0))
+                    if int(t) not in seen:
+                        seen.add(int(t))
+                        name = Path(f"/proc/{pid}/task/{t}/comm").read_text().strip()
+                        print(f"{time.strftime('%T')} fil temps réel remis en normal : {name} (pid {pid}, fil {t})",
+                              file=sys.stderr, flush=True)
+                except (OSError, ValueError, IndexError):
+                    pass
+        return True
+
     def probe_pids(self):
         out = []
         for t in Path(f"/proc/{os.getpid()}/task").iterdir():
