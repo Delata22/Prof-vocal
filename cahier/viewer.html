@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cahier</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/copy-tex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--fg:#1f1e1c;--muted:#6d6b65;--line:#e2e0d8;--acc:#185FA5;--accbg:#E6F1FB;--warn:#FAEEDA}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#262624;--fg:#ecebe6;--muted:#a3a19a;--line:#3a3936;--acc:#85B7EB;--accbg:#0C447C;--warn:#633806}}
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
+header{padding:10px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px}
+header h1{font-size:18px;font-weight:500;margin:0;flex:1}
+header .dot{width:9px;height:9px;border-radius:50%;background:#1D9E75}
+header .dot.off{background:#E24B4A}
+main{flex:1;display:grid;grid-template-columns:210px minmax(0,1fr) 250px;min-height:0}
+main.nostrip{grid-template-columns:210px minmax(0,1fr) 0}
+header .lay{display:flex;gap:4px}
+header .lay button.on{background:var(--accbg);color:var(--acc);border-color:var(--acc)}
+#stage{overflow:auto;padding:16px;display:grid;gap:16px;align-content:start;min-width:0}
+#stage.n2,#stage.n4{grid-template-columns:repeat(2,minmax(0,1fr))}
+#stage.n3{grid-template-columns:repeat(3,minmax(0,1fr))}
+#stage.n3 .card,#stage.n4 .card{font-size:16px}
+#stage .card{font-size:18px}
+#stage .card h2{font-size:17px}
+#strip{border-left:1px solid var(--line);overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
+#strip .lbl{color:var(--muted);font-size:12px}
+.thumb{position:relative;height:150px;border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden;cursor:pointer;flex:none;transition:border-color .2s}
+.thumb:hover{border-color:var(--acc)}
+.thumb .tt{position:absolute;inset:0 0 auto 0;padding:5px 30px 5px 9px;font-size:12px;background:var(--card);border-bottom:1px solid var(--line);z-index:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thumb .tt b{color:var(--acc);font-weight:500;margin-right:5px}
+.thumb .x{position:absolute;top:2px;right:3px;z-index:3;border:0;padding:0 6px;font-size:15px;color:var(--muted)}
+.thumb .mini{position:absolute;top:30px;left:0;width:182%;transform:scale(.55);transform-origin:0 0;pointer-events:none}
+.thumb .mini .card{border:0}
+.thumb .ph{position:absolute;top:30px;inset-inline:0;bottom:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:13px}
+@keyframes enter{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes spot{0%{box-shadow:0 0 0 0 var(--acc)}30%{box-shadow:0 0 0 4px var(--acc)}100%{box-shadow:0 0 0 0 transparent}}
+#stage .card h2{cursor:grab}
+.drop-on{outline:2px dashed var(--acc);outline-offset:-6px;background:color-mix(in srgb,var(--acc) 6%,transparent)}
+.card.drop-slot{outline:3px solid var(--acc)}
+.thumb.drop-before{box-shadow:0 -4px 0 0 var(--acc)}
+.thumb.drop-after{box-shadow:0 4px 0 0 var(--acc)}
+.dragging{opacity:.4}
+.mk{outline:3px solid #EF9F27;outline-offset:3px;border-radius:6px;animation:mkp 1.2s ease-out 2}
+mark.mk,.katex .mk{background:color-mix(in srgb,#EF9F27 35%,transparent);color:inherit;outline-width:2px;outline-offset:1px;border-radius:3px}
+@keyframes mkp{0%{outline-color:transparent}40%{outline-color:#EF9F27}}
+.umk{background:color-mix(in srgb,var(--acc) 28%,transparent);outline:2px solid var(--acc);outline-offset:1px;border-radius:3px}
+#selchip{display:none;align-items:center;gap:6px;max-width:42vw;font-size:13px;color:var(--acc);border:1px solid var(--acc);border-radius:7px;padding:2px 4px 2px 9px}
+#selchip.on{display:flex} #selchip span{overflow:hidden;white-space:nowrap;text-overflow:ellipsis} #selchip button{border:0;padding:0 6px}
+.card.enter{animation:enter .35s ease-out,spot 1.6s ease-out}
+nav{border-right:1px solid var(--line);overflow:auto;padding:12px}
+nav .step{color:var(--muted);font-size:13px;margin:14px 0 4px}
+nav .it{padding:5px 8px;border-radius:7px;cursor:pointer;font-size:14px;display:flex;gap:8px}
+nav .it:hover{background:var(--line)}
+nav .it.on{background:var(--accbg);color:var(--acc)}
+nav .it .id{font-variant-numeric:tabular-nums;min-width:30px;color:var(--muted)}
+nav .it.on .id{color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;min-width:0;overflow:auto}
+.card.new{outline:2px solid var(--acc)}
+.card h2{font-size:15px;font-weight:500;margin:0 0 8px;display:flex;gap:8px;align-items:center}
+.card h2 .id{color:var(--acc)}
+.card h2 .sp{flex:1}
+button{font:inherit;font-size:13px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:3px 9px;cursor:pointer}
+button:hover{background:var(--line)}
+.body svg{max-width:100%;height:auto}
+.body table{border-collapse:collapse}.body td,.body th{border:1px solid var(--line);padding:4px 8px}
+.der .row{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:14px;padding:6px 0;border-top:1px solid var(--line)}
+.der .l{overflow-x:auto}.der .why{color:var(--muted);font-size:14px}
+.der .hid{border:1px dashed var(--line);border-radius:7px;padding:6px;color:var(--muted);font-size:13px;grid-column:1/-1}
+.der .hint{background:var(--warn);border-radius:7px;padding:4px 8px;font-size:14px}
+iframe{width:100%;border:0;min-height:420px;background:transparent;border-radius:8px;color-scheme:light dark}
+.demo .stage iframe{min-height:360px}
+.demo .ctl{display:flex;gap:6px;align-items:center;margin:8px 0;flex-wrap:wrap}
+.demo .st{color:var(--muted);font-size:13px;margin-left:auto}
+.demo .st.wait{color:var(--acc)}
+.demo .shows>div{padding:6px 10px;border-left:3px solid transparent;opacity:.55}
+.demo .shows>div.cur{opacity:1;border-left-color:var(--acc)}
+.empty{color:var(--muted);padding:40px;text-align:center}
+.home a{display:block;padding:10px 14px;border:1px solid var(--line);border-radius:10px;margin:8px 0;color:var(--fg);text-decoration:none;background:var(--card)}
+</style>
+</head>
+<body>
+<header><span class="dot" id="dot"></span><h1 id="title">Cahier</h1>
+<span id="selchip" title="Ce que tu montres au prof : il le verra avec ta prochaine question"><span></span><button title="Effacer la sélection">×</button></span>
+<span class="lay"><button id="lf" title="Une carte en grand">Focus</button><button id="ld" title="Deux cartes côte à côte">Côte à côte</button></span>
+<span id="meta" style="color:var(--muted);font-size:13px"></span></header>
+<main id="main"><nav id="nav"></nav><section id="stage"></section><aside id="strip"></aside></main>
+<script>
+const slug = decodeURIComponent(location.pathname.replace(/^\/s\//, "").replace(/\/$/, ""));
+let data = null, version = -1, seen = new Set();
+const redo = {};        // id -> {on, shown, hint}  (état local, survit aux rafraîchissements)
+const replayed = {};    // id -> compteur déjà joué
+let cmdDone = null;     // dernière commande de démo exécutée
+
+const ANIM_BASE = `<meta name="color-scheme" content="light dark"><style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1f1e1c;--muted:#6d6b65;--line:#d8d6ce;--acc:#185FA5}
+@media (prefers-color-scheme:dark){:root{--bg:#262624;--fg:#ecebe6;--muted:#a3a19a;--line:#4a4945;--acc:#85B7EB}}
+html,body{background:transparent;color:var(--fg);font-family:system-ui,sans-serif}
+button{font:inherit;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:7px;padding:4px 12px;cursor:pointer}
+</style>
+<style>.mk{outline:3px solid #EF9F27;outline-offset:2px;border-radius:4px}mark.mk{background:rgba(239,159,39,.35);color:inherit;outline-width:2px}</style>
+<script>
+addEventListener("mouseup", () => setTimeout(() => {
+  const t = String(getSelection() || "").replace(/\s+/g, " ").trim();
+  if (t) { parent.postMessage({cahierSel: t}, "*"); getSelection().removeAllRanges(); }
+}, 0));
+addEventListener("message", e => {
+  const M = e.data && e.data.cahierMarks; if (!M) return;
+  document.querySelectorAll("mark.mk").forEach(m => m.replaceWith(...m.childNodes));
+  document.querySelectorAll("rect.mk").forEach(r => r.remove());
+  document.querySelectorAll(".mk").forEach(x => x.classList.remove("mk"));
+  let first = null;
+  for (const mk of M) {
+    let scope = document.body;
+    if (mk.ligne) {
+      const rows = document.querySelectorAll(".row, tr, li, p");
+      const r = rows[mk.ligne - 1]; if (r) { scope = r; r.classList.add("mk"); first = first || r; }
+    }
+    if (!mk.texte) continue;
+    const hits = [], w = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {acceptNode: n =>
+      n.parentElement.closest("script,style,mark") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
+    for (let n; (n = w.nextNode());) if (n.nodeValue.includes(mk.texte)) hits.push(n);
+    for (const n of hits) {
+      const el = n.parentElement;
+      if (el.closest("svg")) {
+        const tx = el.closest("text") || el, bb = tx.getBBox(), r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        Object.entries({x: bb.x - 3, y: bb.y - 2, width: bb.width + 6, height: bb.height + 4, rx: 3, fill: "none", stroke: "#EF9F27", "stroke-width": 2.5}).forEach(([k, v]) => r.setAttribute(k, v));
+        r.classList.add("mk"); tx.ownerSVGElement.append(r); first = first || r; continue;
+      }
+      if (n.nodeValue.trim() === mk.texte.trim()) { el.classList.add("mk"); first = first || el; continue; }   // une case entière
+      let rest = n;
+      for (let i; (i = rest.nodeValue.indexOf(mk.texte)) >= 0;) {
+        const m = document.createElement("mark"); m.className = "mk";
+        const mid = rest.splitText(i); rest = mid.splitText(mk.texte.length);
+        mid.parentNode.replaceChild(m, mid); m.append(mid); first = first || m;
+      }
+    }
+  }
+  if (first && first.scrollIntoView) first.scrollIntoView({block: "nearest"});
+});
+<\/script>`;
+const withTheme = html => /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + ANIM_BASE) : ANIM_BASE + html;
+function demo(c, el, box, btn) {
+  const D = c.demo, steps = D.steps;
+  let k = -1, audio = null, playing = false;
+  box.className = "body demo";
+  let frame = null;
+  if (D.anim) {
+    const sg = document.createElement("div"); sg.className = "stage";
+    frame = document.createElement("iframe"); frame.setAttribute("sandbox", "allow-scripts");
+    frame.srcdoc = withTheme(D.anim); sg.append(frame); box.append(sg);
+  }
+  const ctl = document.createElement("div"); ctl.className = "ctl"; box.append(ctl);
+  const shows = document.createElement("div"); shows.className = "shows"; box.append(shows);
+  const status = document.createElement("span"); status.className = "st";
+  const b = (t, f) => { const x = document.createElement("button"); x.textContent = t; x.onclick = f; ctl.append(x); return x; };
+  const bPlay = b("Lancer", () => playing ? pause() : (k < 0 ? go(0) : say()));
+  b("Précédent", () => go(Math.max(0, k - 1)));
+  b("Répéter", () => go(Math.max(0, k)));
+  b("Continuer", () => go(k + 1));
+  ctl.append(status);
+  function setStatus(t, wait) { status.textContent = t; status.className = "st" + (wait ? " wait" : ""); }
+  function stop() { if (audio) { audio.onended = null; audio.pause(); audio = null; } playing = false; bPlay.textContent = "Reprendre"; }
+  function pause() { stop(); setStatus(`Étape ${k + 1}/${steps.length} · en pause`); }
+  function drawShows() {
+    shows.innerHTML = "";
+    steps.slice(0, k + 1).forEach((s, i) => {
+      if (!s.show) return;
+      const d = document.createElement("div"); d.className = i === k ? "cur" : "";
+      d.innerHTML = s.show.trim().startsWith("<") ? s.show : mathMd(s.show); shows.append(d);
+    });
+    tex(shows);
+    const cur = shows.querySelector(".cur"); if (cur) cur.scrollIntoView({block: "nearest", behavior: "smooth"});
+  }
+  function go(n) {
+    stop();
+    if (n >= steps.length) { setStatus("Fin de la démo", true); bPlay.textContent = "Lancer"; k = steps.length - 1; return; }
+    k = n; drawShows();
+    if (frame) frame.contentWindow.postMessage({step: k, total: steps.length}, "*");
+    say();
+  }
+  function say() {
+    const s = steps[k];
+    if (!s.say) return after();
+    playing = true; bPlay.textContent = "Pause";
+    setStatus(`Étape ${k + 1}/${steps.length} · je parle`);
+    audio = new Audio("/api/tts?t=" + encodeURIComponent(s.say));
+    audio.onended = after;
+    audio.play().catch(() => { playing = false; bPlay.textContent = "Lancer"; setStatus("Clique « Lancer » une fois pour autoriser le son", true); });
+  }
+  function after() {
+    playing = false; audio = null; bPlay.textContent = "Reprendre";
+    if (steps[k].pause) setStatus(`Étape ${k + 1}/${steps.length} · à toi (Continuer ou espace)`, true);
+    else go(k + 1);
+  }
+  el._ctl = {start: () => go(0), next: () => go(k + 1), prev: () => go(Math.max(0, k - 1)), repeat: () => go(Math.max(0, k)), pause};
+  setStatus(`${steps.length} étapes`);
+}
+document.addEventListener("keydown", e => {
+  if (e.code !== "Space" || e.target.tagName === "BUTTON") return;
+  const d = [...document.querySelectorAll(".card")].find(x => x._ctl); if (!d) return;
+  e.preventDefault(); d._ctl.next();
+});
+
+function mathMd(src) {
+  // protège le LaTeX du parseur markdown, puis le remet
+  const keep = [];
+  src = src.replace(/\$\$[\s\S]+?\$\$|\$[^\$\n]+?\$/g, m => { keep.push(m); return `@@M${keep.length - 1}@@`; });
+  let html = marked.parse(src);
+  return html.replace(/@@M(\d+)@@/g, (_, i) => keep[i].replace(/&/g, "&amp;").replace(/</g, "&lt;"));
+}
+function tex(el) {
+  renderMathInElement(el, {delimiters: [{left: "$$", right: "$$", display: true}, {left: "$", right: "$", display: false}], throwOnError: false});
+}
+function post() {
+  const st = data.state;
+  fetch(`/api/s/${slug}/state`, {method: "POST", body: JSON.stringify({pinned: st.pinned, layout: st.layout, main: st.main, selection: st.selection || null})})
+    .then(r => r.json()).then(j => version = j.version);
+}
+function norm() {           // anciens cahiers : pas encore de layout / main
+  const st = data.state;
+  st.layout = st.layout || "focus";
+  st.main = (st.main || st.pinned.slice(-1)).filter(i => data.cards.some(c => c.id === i));
+  if (st.layout === "focus") st.main = st.main.slice(-1);
+}
+function focus(id) {        // clic : la carte passe au centre
+  const st = data.state;
+  if (!st.pinned.includes(id)) st.pinned.push(id);
+  if (st.layout === "duo") {
+    if (!st.main.includes(id)) st.main = st.main.length < 2 ? [...st.main, id] : [...st.main.slice(1), id];   // remplace la plus ancienne
+  } else st.main = [id];
+  render(); post();
+}
+function hide(id) {         // retire du centre, reste dans les vignettes
+  const st = data.state;
+  st.main = st.main.filter(i => i !== id);
+  render(); post();
+}
+function close_(id) {
+  const st = data.state;
+  st.pinned = st.pinned.filter(i => i !== id);
+  st.main = st.main.filter(i => i !== id);
+  if (!st.main.length && st.pinned.length) st.main = st.pinned.slice(-1);
+  render(); post();
+}
+function setLayout(m) {
+  const st = data.state; st.layout = m;
+  if (m === "duo" && st.main.length < 2) {
+    const other = [...st.pinned].reverse().find(i => !st.main.includes(i));
+    if (other) st.main = [other, ...st.main];
+  }
+  if (m === "focus") st.main = st.main.slice(-1);
+  render(); post();
+}
+// ---------- glisser-déposer ----------
+// vignette / étape de la frise -> centre ; carte du centre -> colonne de droite ; réordonner les vignettes
+let drag = null;
+function draggable(el, id, from) {
+  el.draggable = true;
+  el.addEventListener("dragstart", e => {
+    drag = {id, from}; e.dataTransfer.setData("text/plain", id); e.dataTransfer.effectAllowed = "move";
+    setTimeout(() => (from === "stage" ? el.closest(".card") : el).classList.add("dragging"), 0);
+  });
+  el.addEventListener("dragend", () => { drag = null; clearDrop(); document.querySelectorAll(".dragging").forEach(x => x.classList.remove("dragging")); });
+}
+function clearDrop() {
+  document.querySelectorAll(".drop-on,.drop-slot,.drop-before,.drop-after").forEach(x => x.classList.remove("drop-on", "drop-slot", "drop-before", "drop-after"));
+}
+function stageSlot(e) {          // carte du centre sous le curseur (-1 : à côté des cartes)
+  return [...document.querySelectorAll("#stage > .card")].findIndex(c => {
+    const r = c.getBoundingClientRect(); return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  });
+}
+const stageEl = document.getElementById("stage"), stripEl = document.getElementById("strip");
+stageEl.addEventListener("dragover", e => {
+  if (!drag) return; e.preventDefault(); clearDrop(); stageEl.classList.add("drop-on");
+  const c = document.querySelectorAll("#stage > .card")[stageSlot(e)]; if (c && data.state.layout === "duo") c.classList.add("drop-slot");   // sinon : ajoutée à côté
+});
+stageEl.addEventListener("dragleave", e => { if (!stageEl.contains(e.relatedTarget)) clearDrop(); });
+stageEl.addEventListener("drop", e => {
+  if (!drag) return; e.preventDefault(); clearDrop();
+  const st = data.state, id = drag.id, slot = stageSlot(e);
+  if (!st.pinned.includes(id)) st.pinned.push(id);
+  if (st.layout === "duo") {
+    const m = [...st.main], j = m.indexOf(id);
+    if (j >= 0 && slot >= 0) [m[j], m[slot]] = [m[slot], m[j]];   // échange deux cartes du centre
+    else if (j >= 0) {}
+    else if (slot >= 0) m[slot] = id;                              // remplace la carte visée
+    else if (m.length < 4) m.push(id);                             // lâchée à côté : ajoutée (4 max)
+    else m[3] = id;
+    st.main = m.filter(Boolean).slice(0, 4);
+  } else st.main = [id];
+  render(); post();
+});
+function stripTarget(e) {        // vignette visée et position (avant / après)
+  const t = [...stripEl.querySelectorAll(".thumb")].find(x => { const r = x.getBoundingClientRect(); return e.clientY < r.bottom; });
+  if (!t) return {t: null, after: true};
+  const r = t.getBoundingClientRect(); return {t, after: e.clientY > r.top + r.height / 2};
+}
+stripEl.addEventListener("dragover", e => {
+  if (!drag) return; e.preventDefault(); clearDrop(); stripEl.classList.add("drop-on");
+  const {t, after} = stripTarget(e); if (t && t.dataset.id !== drag.id) t.classList.add(after ? "drop-after" : "drop-before");
+});
+stripEl.addEventListener("dragleave", e => { if (!stripEl.contains(e.relatedTarget)) clearDrop(); });
+stripEl.addEventListener("drop", e => {
+  if (!drag) return; e.preventDefault();
+  const {t, after} = stripTarget(e); clearDrop();
+  const st = data.state, id = drag.id;
+  st.main = st.main.filter(i => i !== id);
+  if (!st.main.length) { const o = [...st.pinned].reverse().find(i => i !== id); if (o) st.main = [o]; }
+  // ordre affiché = pinned à l'envers (la plus récente en haut)
+  let shown = [...st.pinned].reverse().filter(i => !st.main.includes(i) && i !== id);
+  let k = t ? shown.indexOf(t.dataset.id) : -1;
+  k = k < 0 ? shown.length : k + (after ? 1 : 0);
+  shown.splice(k, 0, id);
+  st.pinned = [...shown].reverse().concat(st.main.filter(i => !shown.includes(i)));
+  render(); post();
+});
+
+document.getElementById("lf").onclick = () => setLayout("focus");
+document.getElementById("ld").onclick = () => setLayout("duo");
+
+function renderNav() {
+  const nav = document.getElementById("nav"); nav.innerHTML = "";
+  let last = null;
+  for (const c of data.cards) {
+    if (c.step !== last) {
+      last = c.step;
+      const s = document.createElement("div"); s.className = "step"; s.textContent = c.step; nav.append(s);
+    }
+    const it = document.createElement("div");
+    it.className = "it" + (data.state.main.includes(c.id) ? " on" : "");
+    it.innerHTML = `<span class="id"></span><span class="t"></span>`;
+    it.querySelector(".id").textContent = c.id;
+    it.querySelector(".t").textContent = c.title;
+    it.onclick = () => data.state.main.includes(c.id) ? hide(c.id) : focus(c.id);   // 2e clic : masque
+    draggable(it, c.id, "nav");
+    nav.append(it);
+  }
+}
+
+function derivation(c, box) {
+  const r = redo[c.id] || (redo[c.id] = {on: false, shown: 0, hint: false});
+  box.className = "body der";
+  c.lines.forEach((ln, k) => {
+    const row = document.createElement("div"); row.className = "row";
+    if (!r.on || k < r.shown) {
+      row.innerHTML = `<div class="l"></div><div class="why"></div>`;
+      row.querySelector(".l").textContent = `$$${ln.l}$$`;
+      row.querySelector(".why").textContent = ln.why || "";
+    } else if (k === r.shown) {
+      row.innerHTML = `<div class="hid">Ligne ${k + 1} : à toi.</div>`;
+      if (r.hint && ln.why) {
+        const h = document.createElement("div"); h.className = "hint"; h.textContent = "Indice : " + ln.why;
+        h.style.gridColumn = "1/-1"; row.append(h);
+      }
+    } else return;
+    box.append(row);
+  });
+  return r;
+}
+
+function cardEl(c) {
+  const el = document.createElement("article"); el.className = "card";
+  el.innerHTML = `<h2><span class="id"></span><span class="tt"></span><span class="sp"></span></h2>`;
+  el.dataset.id = c.id;
+  el.querySelector(".id").textContent = c.id;
+  el.querySelector(".tt").textContent = c.title;
+  const bar = el.querySelector("h2"), box = document.createElement("div"); box.className = "body";
+  const btn = (txt, fn) => { const b = document.createElement("button"); b.textContent = txt; b.onclick = fn; bar.append(b); };
+
+  if (c.kind === "derivation") {
+    const r = derivation(c, box);
+    if (r.on) {
+      btn("Indice", () => { r.hint = !r.hint; render(); });
+      btn("Ligne suivante", () => { r.shown++; r.hint = false; if (r.shown >= c.lines.length) r.on = false; render(); });
+    }
+    btn(r.on ? "Tout afficher" : "Mode refaire", () => { r.on = !r.on; r.shown = 0; r.hint = false; render(); });
+  } else if (c.kind === "animation") {
+    const f = document.createElement("iframe");
+    f.setAttribute("sandbox", "allow-scripts");
+    f.srcdoc = withTheme(c.body); box.append(f);
+    replayed[c.id] = data.state.replay[c.id] || 0;
+    btn("Rejouer", () => { f.srcdoc = withTheme(c.body); });
+    el._iframe = f;
+  } else if (c.kind === "demo") {
+    demo(c, el, box, btn);
+  } else if (c.kind === "image") {
+    const im = document.createElement("img"); im.src = `/files/${encodeURIComponent(slug)}/${encodeURIComponent(c.body)}`;
+    im.alt = c.title; im.style.cssText = "max-width:100%;max-height:70vh;display:block;margin:auto;border-radius:8px";
+    box.append(im);
+  } else if (c.kind === "schema") {
+    box.innerHTML = c.body;
+  } else {
+    box.innerHTML = mathMd(c.body);
+  }
+  if (c.kind === "text" || c.kind === "derivation") btn("Copier", e => copySource(c, e.target));
+  btn("Masquer", () => hide(c.id));
+  btn("Fermer", () => close_(c.id));
+  el.append(box);
+  if (c.kind !== "animation" && c.kind !== "demo") tex(box);
+  return el;
+}
+
+const cache = {};   // cartes du centre, gardées vivantes (iframes, démo en cours)
+let stageKey = "", stripKey = "", prevMain = [], marksKey = null;
+function thumbEl(c) {
+  const t = document.createElement("div"); t.className = "thumb"; t.title = c.title;
+  t.innerHTML = `<div class="tt"><b></b><span></span></div><button class="x" title="Fermer">×</button>`;
+  t.querySelector("b").textContent = c.id; t.querySelector("span").textContent = c.title;
+  if (c.kind === "animation" || c.kind === "demo") {
+    const ph = document.createElement("div"); ph.className = "ph";
+    ph.textContent = c.kind === "demo" ? "Démo parlée" : "Animation"; t.append(ph);
+  } else {
+    const m = document.createElement("div"); m.className = "mini";
+    const light = {...c};
+    if (c.kind === "derivation") light.lines = c.lines.slice(0, 2);
+    if (c.kind === "text") light.body = c.body.split("\n").filter(l => l.trim()).slice(0, 4).join("\n\n").slice(0, 400);
+    const el = cardEl(light); el.querySelectorAll("button").forEach(b => b.remove()); m.append(el); t.append(m);
+  }
+  t.dataset.id = c.id;
+  draggable(t, c.id, "strip");
+  t.onclick = () => focus(c.id);
+  t.querySelector(".x").onclick = e => { e.stopPropagation(); close_(c.id); };
+  return t;
+}
+// ---------- ce que l'élève montre : sélection à la souris ----------
+function setSelection(sel) {
+  data.state.selection = sel; selKey = null; render(); post();
+}
+document.addEventListener("mouseup", () => setTimeout(() => {
+  const s = window.getSelection(), t = s ? s.toString().replace(/\s+/g, " ").trim() : "";
+  if (!t || s.rangeCount === 0) return;
+  const r = s.getRangeAt(0), node = r.commonAncestorContainer.nodeType === 1 ? r.commonAncestorContainer : r.commonAncestorContainer.parentElement;
+  const card = node.closest && node.closest("#stage > .card"); if (!card) return;
+  let ligne = null;
+  const bl = blocks(card), hit = bl.findIndex(b => b.contains(r.startContainer)); if (hit >= 0) ligne = hit + 1;
+  // dans une formule, le texte sélectionné est illisible : on joint la source LaTeX des formules touchées
+  const tex = [...card.querySelectorAll(".katex")].filter(k => r.intersectsNode(k))
+    .map(k => (k.querySelector("annotation") || {}).textContent).filter(Boolean).join(" ; ");
+  setSelection({id: card.dataset.id, ligne, texte: t.slice(0, 300), tex: tex.slice(0, 500) || null});
+  // on ne retire pas la sélection : elle doit rester copiable (Ctrl+C). Le surlignage bleu attend qu'elle disparaisse.
+}, 0));
+window.addEventListener("message", e => {        // sélection faite dans une animation
+  const m = e.data && e.data.cahierSel; if (!m) return;
+  const f = [...document.querySelectorAll("#stage iframe")].find(x => x.contentWindow === e.source);
+  const card = f && f.closest(".card"); if (!card) return;
+  setSelection({id: card.dataset.id, ligne: null, texte: String(m).slice(0, 300), tex: null});
+});
+document.querySelector("#selchip button").onclick = () => setSelection(null);
+let selKey = null;
+function copySource(c, b) {
+  const t = c.kind === "derivation" ? c.lines.map(l => `$$${l.l}$$` + (l.why ? `\n${l.why}` : "")).join("\n\n") : c.body;
+  const ok = () => { const o = b.textContent; b.textContent = "Copié"; setTimeout(() => b.textContent = o, 1200); };
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(ok).catch(() => {
+    const ta = document.createElement("textarea"); ta.value = t; document.body.append(ta); ta.select();
+    document.execCommand("copy"); ta.remove(); ok();
+  });
+}
+function liveSelection() {
+  const s = window.getSelection();
+  return s && !s.isCollapsed && s.rangeCount && document.getElementById("stage").contains(s.getRangeAt(0).commonAncestorContainer);
+}
+document.addEventListener("selectionchange", () => { if (!liveSelection() && data && JSON.stringify(data.state.selection || null) !== selKey) render(); });
+function showChip() {
+  const sel = data.state.selection, chip = document.getElementById("selchip");
+  chip.classList.toggle("on", !!sel);
+  if (sel) chip.querySelector("span").textContent = `Tu montres : ${sel.id}${sel.ligne ? " · ligne " + sel.ligne : ""} ${sel.tex ? "(formule)" : "« " + sel.texte + " »"}`;
+}
+function showSelection() {
+  const sel = data.state.selection, chip = document.getElementById("selchip");
+  document.querySelectorAll("#stage mark.umk").forEach(m => m.replaceWith(...m.childNodes));
+  document.querySelectorAll("#stage .umk").forEach(x => x.classList.remove("umk"));
+  chip.classList.toggle("on", !!sel);
+  if (!sel) return;
+  chip.querySelector("span").textContent = `Tu montres : ${sel.id}${sel.ligne ? " · ligne " + sel.ligne : ""} ${sel.tex ? "(formule)" : "« " + sel.texte + " »"}`;
+  const card = document.querySelector(`#stage > .card[data-id="${CSS.escape(sel.id)}"]`); if (!card) return;
+  let scope = card.querySelector(".body");
+  if (sel.ligne) { const b = blocks(card)[sel.ligne - 1]; if (b) scope = b; }
+  const n = markText(scope, sel.texte);                       // surligne le texte choisi (en bleu)
+  scope.querySelectorAll("mark.mk:not(.pm)").forEach(m => { m.classList.remove("mk"); m.classList.add("umk"); });
+  scope.querySelectorAll(".katex .mk").forEach(x => { if (!x.classList.contains("pm")) { x.classList.remove("mk"); x.classList.add("umk"); } });
+  if (!n && sel.ligne && scope !== card.querySelector(".body")) scope.classList.add("umk");   // formule : on montre la ligne
+}
+
+// ---------- ce que le prof cite : encadré / surligné ----------
+function blocks(card) {      // les « lignes » d'une carte
+  const b = card.querySelector(".body");
+  if (b.classList.contains("der")) return [...b.querySelectorAll(".row")];
+  return [...b.querySelectorAll("p, li, tbody tr, h3, h4, .katex-display")].filter(x => !x.closest("li p, td"));
+}
+function markText(scope, t) {
+  const hits = [], walk = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+    acceptNode: n => n.parentElement.closest(".katex-mathml, mark") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT});
+  for (let n; (n = walk.nextNode());) if (n.nodeValue.includes(t)) hits.push(n);
+  for (const n of hits) {
+    const el = n.parentElement;
+    if (el.closest(".katex")) { el.classList.add("mk"); continue; }          // nombre dans une formule : on l'encadre
+    if (el.closest("svg")) {                                                  // texte d'un schéma : rectangle autour
+      const tx = el.closest("text") || el, bb = tx.getBBox(), svg = tx.ownerSVGElement;
+      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      Object.entries({x: bb.x - 3, y: bb.y - 2, width: bb.width + 6, height: bb.height + 4, rx: 3, fill: "none",
+        stroke: "#EF9F27", "stroke-width": 2.5}).forEach(([k, v]) => r.setAttribute(k, v));
+      r.classList.add("mk"); svg.append(r); continue;
+    }
+    let rest = n;                                                             // texte normal : surligné
+    for (let i; (i = rest.nodeValue.indexOf(t)) >= 0;) {
+      const m = document.createElement("mark"); m.className = "mk";
+      const mid = rest.splitText(i); rest = mid.splitText(t.length);
+      mid.parentNode.replaceChild(m, mid); m.append(mid);
+    }
+  }
+  return hits.length;
+}
+function clearMarks() {
+  const st = document.getElementById("stage");
+  st.querySelectorAll("mark.mk").forEach(m => m.replaceWith(...m.childNodes));
+  st.querySelectorAll("rect.mk").forEach(r => r.remove());
+  st.querySelectorAll(".mk").forEach(x => x.classList.remove("mk", "pm"));
+  st.querySelectorAll("iframe").forEach(f => { f._marks = []; f.contentWindow && f.contentWindow.postMessage({cahierMarks: []}, "*"); });
+}
+function applyMarks(marks) {
+  let first = null;
+  const frames = {};
+  for (const mk of marks) {
+    const card = document.querySelector(`#stage > .card[data-id="${CSS.escape(mk.id)}"]`); if (!card) continue;
+    const f = card.querySelector("iframe");
+    if (f) { (frames[mk.id] = frames[mk.id] || {f, m: []}).m.push(mk); first = first || card; continue; }   // animation : c'est elle qui encadre
+    let scope = card.querySelector(".body");
+    if (mk.ligne) {
+      const b = blocks(card)[mk.ligne - 1];
+      if (b) { scope = b; b.classList.add("mk"); }
+    }
+    if (mk.texte) markText(scope, mk.texte) || scope.classList.add("mk");
+    scope.querySelectorAll(".mk").forEach(x => x.classList.add("pm"));
+    first = first || scope.querySelector(".mk") || (scope.classList.contains("mk") ? scope : null);
+  }
+  for (const {f, m} of Object.values(frames)) {
+    f._marks = m; f.contentWindow.postMessage({cahierMarks: m}, "*");
+    if (!f._mkload) { f._mkload = true; f.addEventListener("load", () => f._marks && f._marks.length && f.contentWindow.postMessage({cahierMarks: f._marks}, "*")); }
+  }
+  if (first) first.scrollIntoView({block: "nearest", behavior: "smooth"});
+}
+
+function render() {
+  norm();
+  const st = data.state, card = id => data.cards.find(x => x.id === id);
+  document.title = data.title;
+  document.getElementById("title").textContent = data.title;
+  document.getElementById("meta").textContent = `${data.cards.length} cartes`;
+  document.getElementById("lf").className = st.layout === "focus" ? "on" : "";
+  document.getElementById("ld").className = st.layout === "duo" ? "on" : "";
+  renderNav();
+
+  const stage = document.getElementById("stage");
+  const main = st.main.filter(card);
+  const sk = st.layout + "|" + main.map(i => i + ":" + card(i).t).join(",") + "|" + JSON.stringify(redo);
+  if (sk !== stageKey) {     // ne touche au centre que s'il change (sinon les iframes repartent de zéro)
+    stageKey = sk;
+    stage.className = st.layout === "duo" && main.length > 1 ? "n" + Math.min(main.length, 4) : "";
+    stage.innerHTML = "";
+    if (!main.length) stage.innerHTML = `<div class="empty">Aucune carte au centre. Clique ou glisse une vignette, une étape de la frise, ou demande-la à Claude.</div>`;
+    for (const id of main) {
+      const c = card(id);
+      let el = cache[id];
+      if (!el || el._t !== c.t || (c.kind !== "animation" && c.kind !== "demo")) { el = cardEl(c); el._t = c.t; cache[id] = el; }
+      if (!el._drag) { draggable(el.querySelector("h2"), id, "stage"); el._drag = true; }
+      el.classList.remove("enter");
+      if (!prevMain.includes(id)) { void el.offsetWidth; el.classList.add("enter"); }
+      stage.append(el);
+    }
+    prevMain = main;
+    marksKey = null;
+  }
+  const mkk = JSON.stringify(st.marks || []);
+  const sk2 = JSON.stringify(st.selection || null);
+  // sous une sélection en cours (pour la copier), on ne touche pas au DOM : seul la puce change
+  if (liveSelection() && mkk === marksKey) showChip();
+  else if (mkk !== marksKey || sk2 !== selKey) { marksKey = mkk; selKey = sk2; clearMarks(); applyMarks(st.marks || []); showSelection(); }
+  for (const id of main) {   // animation relancée à distance
+    const el = cache[id], c = card(id);
+    if (c.kind === "animation" && (st.replay[id] || 0) !== replayed[id]) { replayed[id] = st.replay[id] || 0; el._iframe.srcdoc = withTheme(c.body); }
+  }
+
+  const rest = st.pinned.filter(i => !main.includes(i) && card(i));
+  const tk = rest.map(i => i + ":" + card(i).t).join(",");
+  if (tk !== stripKey) {
+    stripKey = tk;
+    const strip = document.getElementById("strip"); strip.innerHTML = "";
+    document.getElementById("main").classList.toggle("nostrip", !rest.length);
+    if (rest.length) { const l = document.createElement("div"); l.className = "lbl"; l.textContent = "Ouvertes"; strip.append(l); }
+    const shown = [...rest].reverse();
+    for (const id of shown.slice(0, 12)) strip.append(thumbEl(card(id)));
+    if (shown.length > 12) {
+      const more = document.createElement("div"); more.className = "lbl";
+      more.textContent = `+ ${shown.length - 12} autres ouvertes (dans la frise)`; strip.append(more);
+    }
+  }
+
+  const cmd = st.cmd;
+  if (cmd && cmdDone === null) cmdDone = cmd.n;          // ne rejoue pas l'ancienne commande au chargement
+  else if (cmd && cmd.n !== cmdDone) {
+    cmdDone = cmd.n;
+    const el = cache[cmd.id];
+    if (el && cmd.action === "step") {                      // animation : on lui dit quelle étape dessiner
+      const f = el.querySelector("iframe"); if (f) f.contentWindow.postMessage({step: cmd.k}, "*");
+    } else if (el && el._ctl && el._ctl[cmd.action]) el._ctl[cmd.action]();
+  }
+  if (!cmd && cmdDone === null) cmdDone = 0;
+}
+
+async function poll() {
+  try {
+    const j = await (await fetch(`/api/s/${slug}`)).json();
+    document.getElementById("dot").className = "dot";
+    if (j.version !== version) { version = j.version; data = j; render(); }
+  } catch (e) { document.getElementById("dot").className = "dot off"; }
+  setTimeout(poll, 700);
+}
+
+async function home() {
+  document.getElementById("main").innerHTML = `<section class="home" style="padding:20px;max-width:700px"></section>`;
+  const l = await (await fetch("/api/list")).json(), s = document.querySelector(".home");
+  if (!l.length) s.innerHTML = `<div class="empty">Aucun cahier pour l'instant.</div>`;
+  for (const c of l) {
+    const a = document.createElement("a"); a.href = `/s/${c.slug}`;
+    a.textContent = `${c.title}  ·  ${c.cards} cartes`; s.append(a);
+  }
+}
+slug ? poll() : home();
+</script>
+</body>
+</html>

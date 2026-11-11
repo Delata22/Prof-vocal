@@ -7,7 +7,7 @@ TOPIC="${2:-$SLUG}"
 PORT="${PROF_PORT:-8778}"
 URL="http://localhost:$PORT/"
 
-python3 ~/.claude/cahier/cahier.py new "$SLUG" "$TOPIC"     # crée le cahier (ou le réutilise) et lance son serveur
+python3 "$(dirname "$(readlink -f "$0")")/cahier/cahier.py" new "$SLUG" "$TOPIC"     # crée le cahier (ou le réutilise) et lance son serveur
 if curl -s -o /dev/null "$URL"; then echo "un Prof tourne déjà sur $URL"; exit 1; fi
 
 if [ -z "${PROF_NO_OPEN:-}" ]; then

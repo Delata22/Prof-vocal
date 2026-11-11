@@ -18,7 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LIB = HERE / "scene" / "scene.js"
-CAHIER = Path.home() / ".claude" / "cahier" / "cahier.py"
+CAHIER = HERE / "cahier" / "cahier.py"
 KATEX = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist"
 
 try:

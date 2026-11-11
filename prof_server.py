@@ -23,7 +23,7 @@ import numpy as np
 import soxr
 from aiohttp import web, WSMsgType
 
-CAHIER = Path.home() / ".claude/cahier/cahier.py"
+CAHIER = Path(__file__).resolve().parent / "cahier" / "cahier.py"   # le tableau (données : ~/.claude/cahier)
 VOICE = Path.home() / ".claude/cahier/voices/fr_FR-siwis-medium.onnx"
 SESS = HERE / "sessions"
 LOG = HERE / "latency.log"
@@ -350,7 +350,7 @@ class Brain:
         self.check_prompt_update((HERE / "prompt.md").read_text())
         system = (HERE / "prompt.md").read_text().replace("{slug}", self.slug).replace("{topic}", self.topic) \
             .replace("{pron}", f"python3 {HERE / 'pron.py'}") \
-            .replace("{scene_py}", str(HERE / "scene.py")).replace("{scene_api}", str(HERE / "scene" / "API.md"))
+            .replace("{scene_py}", str(HERE / "scene.py")).replace("{cahier_py}", str(CAHIER)).replace("{scene_api}", str(HERE / "scene" / "API.md"))
         # Un Claude Code complet (décision de l'élève, 2026-11-06 : « toutes les perms classiques d'un Claude normal ») :
         # tous les outils standard, tout le dossier personnel, sa config utilisateur (CLAUDE.md, mémoire, hooks).
         # Permissions « classiques » : mode auto (le classifieur laisse passer le sûr) ; ce qui reste à décider

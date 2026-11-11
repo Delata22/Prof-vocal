@@ -83,6 +83,7 @@ Le prof dessine avec `scene/scene.js`, un moteur de scènes dont l'API copie man
 - `prompt.md` : consignes du prof (ajoutées au system prompt de Claude Code).
 - `latency.log` : latence mesurée par la page (fin de parole → 1er son).
 - `vocab.txt` (+ `sessions/<slug>/vocab.txt`) : vocabulaire donné à Whisper (initial_prompt + hotwords), relu à chaud.
+- `cahier/` : le tableau. `cahier.py` (commandes `new`, `add`, `focus`, `mark`, `step`… et le serveur du tableau, port 8777) et `viewer.html` (la page du tableau). Données (séances, voix Piper, cache) dans `~/.claude/cahier` ; variables `CAHIER_HOME` et `CAHIER_PORT` pour les mettre ailleurs.
 - `pron.py` : lexique de prononciation de Piper (`~/.claude/cahier/prononciation.json`, partagé avec le cahier), relu à chaud.
 - `sessions/<slug>/audio/` : chaque segment wav + `transcriptions.jsonl` (corpus pour un futur fine-tuning de Whisper).
 
@@ -90,6 +91,6 @@ Le prof dessine avec `scene/scene.js`, un moteur de scènes dont l'API copie man
 
 - Claude tourne en un seul processus `claude -p --input-format stream-json --output-format stream-json`
   (pas de démarrage à chaque tour) ; l'interruption envoie un `control_request` `interrupt`.
-  `--setting-sources ""` : pas de hooks utilisateur. Outils : `Bash(python3 ~/.claude/cahier/cahier.py:*)`
+  `--setting-sources ""` : pas de hooks utilisateur. Outils : `Bash(python3 <dépôt>/cahier/cahier.py:*)`
   et `Write` limité à `sessions/<slug>/cards/` (le heredoc avec du LaTeX est refusé par le filtre de permissions).
 - Le cahier n'est pas modifié.
