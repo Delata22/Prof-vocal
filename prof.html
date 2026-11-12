@@ -218,12 +218,25 @@ for (const [id, k] of [["holdsame", "same"], ["holdcard", "card"]]) $(id).onclic
   if (hold) { const it = hold.it; clearHold(); startHold(it); } else holdUI();
 };
 holdUI();
+// Veille du son : une fin de phrase restée coincée dans la chaîne audio (page → WebKit → casque Bluetooth)
+// est ressortie deux fois ~1 h 40 plus tard, sur un flux resté ouvert. 15 s après la dernière phrase, on
+// ferme donc la sortie (ctx.suspend) ; elle se rouvre à la phrase suivante.
+let idleOff = false, idleTimer = null;
+function idleSoon() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    if (playing || queue.length || userPaused || ducked || ctx.state !== "running") return;
+    idleOff = true; ctx.suspend();
+  }, 15000);
+}
 function playNext() {
   if (playing || ducked || userPaused) return;
   if (queue[0] && needsHold(queue[0])) { startHold(queue[0]); return; }
   if (hold) clearHold();
   const it = queue.shift();
-  if (!it) { cur = null; if (serverState === "listening" || serverState === "done") show("listening"); return; }
+  if (!it) { cur = null; idleSoon(); if (serverState === "listening" || serverState === "done") show("listening"); return; }
+  clearTimeout(idleTimer);
+  if (idleOff) { idleOff = false; ctx.resume(); }
   let src;
   if (it.buf) { src = ctx.createBufferSource(); src.buffer = it.buf; src.connect(out); }
   else {
@@ -886,10 +899,13 @@ document.addEventListener("keydown", () => { if (ctx.state !== "running") soundR
 // Son figé par le système (casque Bluetooth qui change de mode, plantage du rendu…) au milieu d'une phrase :
 // au retour du son, la fin de phrase repartait telle quelle, parfois 1 h 40 plus tard. Au-delà de 30 s de
 // coupure (hors pause voulue), la réponse en cours est périmée : on l'abandonne (réécoutable d'un clic).
-let ctxStop = null;   // {t, user} : quand le son s'est arrêté, et si c'était une pause voulue
+let ctxStop = null;   // {t, user} : quand le son s'est arrêté, et si c'était une pause voulue (ou la mise en veille)
+const plog = msg => { dbg(msg); if (ws && ws.readyState === 1) ws.send(JSON.stringify({t: "pagelog", msg})); };
 ctx.onstatechange = () => {
-  if ($("soundbar")) $("soundbar").hidden = ctx.state === "running" || silent;
-  if (ctx.state !== "running") { if (!ctxStop) ctxStop = {t: performance.now(), user: userPaused}; return; }
+  if ($("soundbar")) $("soundbar").hidden = ctx.state === "running" || silent || idleOff;
+  plog(`son : ${ctx.state} (horloge ${ctx.currentTime.toFixed(1)} s${idleOff ? ", veille" : ""}${userPaused ? ", pause" : ""})`);
+  if (ctx.state !== "running") { if (!ctxStop) ctxStop = {t: performance.now(), user: userPaused || idleOff}; return; }
+  idleOff = false;
   const s = ctxStop; ctxStop = null;
   if (!s || s.user || performance.now() - s.t < 30000 || !(playing || queue.length)) return;
   const lastIt = queue.length ? queue[queue.length - 1] : cur;

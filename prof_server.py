@@ -1531,6 +1531,8 @@ class Prof:
                 elif j["t"] == "cue":            # la page commence à JOUER une phrase : on exécute ses repères
                     log(f"phrase {j.get('idx')} jouée par la page, repères : {j.get('cues')}")
                     asyncio.create_task(self.run_cues(j.get("cues", []), j.get("idx")))
+                elif j["t"] == "pagelog":        # état du son de la page (diagnostic des phrases rejouées en retard)
+                    log("page :", str(j.get("msg", ""))[:300])
                 elif j["t"] == "miclat":         # délai entre l'appui sur espace et le 1er son du micro
                     log(f"micro prêt en {j.get('ms')} ms ({j.get('mic', '')})")
                 elif j["t"] == "scene_error":    # une scène du tableau a affiché une erreur chez l'élève
