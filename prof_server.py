@@ -104,6 +104,11 @@ def parse_vocab(txt):
     return out
 
 
+def parse_contexte(txt):
+    """Contexte de la dictée : le texte sans les lignes de commentaire (#), en un paragraphe."""
+    return " ".join(l.strip() for l in (txt or "").splitlines() if l.strip() and not l.lstrip().startswith("#"))
+
+
 def log(*a):
     t = time.time()
     print(time.strftime("%H:%M:%S", time.localtime(t)) + f".{int(t * 1000) % 1000:03d}", *a, flush=True)
@@ -129,6 +134,7 @@ class Ears:
         self.topic = topic
         # vocabulaire : commun (vocab.txt du projet) + propre au cours (sessions/<slug>/vocab.txt)
         self.vocabs = [Watched(HERE / "vocab.txt", parse_vocab), Watched(SESS / slug / "vocab.txt", parse_vocab)]
+        self.contexte = Watched(SESS / slug / "contexte.txt", parse_contexte)
         self.transcribe(np.zeros(16000, np.float32))  # chauffe
         log(f"whisper {model} {compute} prêt ({time.time() - t:.1f} s) ; vocabulaire : {len(self.words())} termes")
 
@@ -147,8 +153,19 @@ class Ears:
         # Le prompt est une phrase naturelle : une liste « Vocabulaire : a, b, c » fait continuer la liste
         # à Whisper sur un énoncé court (« Allo » -> « SIFT, DOG, ... laulich, laulich »). Les termes
         # techniques sont dans le prompt (hotwords faisait sortir de l'islandais sur un test).
-        termes = ", de ".join(words[:12])
-        prompt = f"Bonjour. Aujourd'hui, en cours, on parle de {self.topic}" + (f", de {termes}." if termes else ".")
+        # Il dicte surtout des formules : le contexte est écrit comme il les dit, propre au cours
+        # (sessions/<slug>/contexte.txt, tenu à jour par le prof), sinon une dictée de calcul générique.
+        # Whisper n'en garde que ~220 jetons (la fin) : contexte court, termes en plus seulement s'ils manquent.
+        ctx = self.contexte.get()
+        if ctx:
+            # au-delà de ~550 caractères, la liste de termes repousserait le début du contexte hors des ~220 jetons
+            manque = [w for w in words if w.lower() not in ctx.lower()][:6] if len(ctx) < 550 else []
+            prompt = ctx + (f" On parle aussi de {', de '.join(manque)}." if manque else "")
+        else:
+            termes = ", de ".join(words[:10])
+            prompt = (f"Cours de {self.topic}. Je dicte mes calculs : la somme de i égale 1 à n de lambda i x i, "
+                      "plus un demi norme de x au carré, A transposée y inférieur ou égal à zéro, moins l'infini sinon."
+                      + (f" On parle de {termes}." if termes else ""))
         if maths:   # dictée d'une ligne de calcul : un prompt de calcul, sinon Whisper recopie la phrase de cours
             prompt = ("Soit n un entier. Soit x un réel. Pour tout i, f de x égale n plus 1. "
                       "D de 4 égale un seizième fois moins deux fois neuf, égale moins 1.12. Sigma 2 égale racine de 2 fois sigma 1.")
