@@ -1,7 +1,7 @@
 # Vocabulaire commun à tous les cours (un terme par ligne ou séparés par des virgules).
-# Chaque cours a aussi sessions/<slug>/vocab.txt. Relu automatiquement à chaque phrase.
-SIFT, DoG, octave, gaussienne, différence de gaussiennes, descripteur, détecteur, gradient, laplacien
+# Chaque cours a aussi sessions/<slug>/vocab.txt, lu en premier (le prompt de Whisper ne garde que 12 termes).
+# Relu automatiquement à chaque phrase. Les termes propres à un cours vont dans son vocab.txt, pas ici.
 Piper, Whisper, Claude, KaTeX, LaTeX
 sigma, epsilon, lambda, delta, nabla, argmin, argmax
 matrice, vecteur propre, valeur propre, transposée, jacobienne, hessienne
-MVA, convolution, pixel, keypoint, matching, RANSAC, homographie
+MVA, gradient, convexe

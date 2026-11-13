@@ -134,7 +134,7 @@ class Ears:
 
     def words(self):
         seen, out = set(), []
-        for v in self.vocabs:
+        for v in reversed(self.vocabs):      # le cours d'abord : le prompt ne garde que les 12 premiers termes
             for w in v.get():
                 if w.lower() not in seen:
                     seen.add(w.lower()); out.append(w)
@@ -161,13 +161,28 @@ class Ears:
                                     condition_on_previous_text=False, initial_prompt=prompt)
         # filtre segment par segment : une hallucination sur la fin silencieuse (« Sous-titrage ST' 501 »
         # après 60 s de vraie parole) ne doit retirer que ce segment, pas toute la transcription
-        segs = [s for s in segs if s.no_speech_prob < 0.8 and s.compression_ratio < 2.4 and s.avg_logprob > -1.0
-                and not self.HALLU.search(s.text) and not self.garbage(s.text)]
-        txt = " ".join(s.text.strip() for s in segs).strip()
+        segs, kept = list(segs), []
+        for s in segs:
+            why = [n for n, bad in (("silence", s.no_speech_prob >= 0.8), ("répétitif", s.compression_ratio >= 2.4),
+                                    ("peu sûr", s.avg_logprob <= -1.0), ("hallucination", bool(self.HALLU.search(s.text))),
+                                    ("charabia", self.garbage(s.text))) if bad]
+            if why:
+                log(f"whisper : segment rejeté ({', '.join(why)} ; nsp {s.no_speech_prob:.2f}, cr {s.compression_ratio:.2f}, "
+                    f"lp {s.avg_logprob:.2f}) : {s.text.strip()[:120]!r}")
+            else:
+                kept.append(s)
+        txt = " ".join(s.text.strip() for s in kept).strip()
+        # enregistrement long (> 3 s) entièrement rejeté : Whisper a pu partir en vrille (repli à température > 0,
+        # ou contexte recopié). Un 2e essai sans contexte récupère en général la vraie phrase.
+        if not txt and segs and use_prompt and len(audio) > 3 * 16000:
+            log("whisper : tout rejeté sur un enregistrement long, 2e essai sans contexte")
+            return self.transcribe(audio, maths=maths, use_prompt=False, beam=beam)
         # Whisper recopie le prompt sur un son trop court ; mais une vraie phrase peut ressembler à un bout
         # du prompt (« soit n un entier ») : on ne rejette qu'une copie d'au moins la moitié du prompt.
         t = txt.lower().strip(" .")
-        copie = bool(prompt) and t in prompt.lower() and len(t) > 0.5 * len(prompt)
+        copie = bool(prompt) and t in prompt.lower() and (len(t) > 0.5 * len(prompt) or len(audio) < 2 * 16000)
+        if copie and t:   # son très court (clic, souffle) : Whisper ressort un mot du contexte (« SIFT », « Bonjour. »)
+            log(f"whisper : recopie du contexte rejetée : {txt!r}")
         return "" if self.HALLU.search(txt) or self.garbage(txt) or copie else txt
 
     @staticmethod
