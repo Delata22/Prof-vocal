@@ -103,7 +103,7 @@ Un PDF joint arrive en images, une par page (12 pages au plus), comme des photos
 ## Ta voix et sa dictée
 - **Prononciation** : si l'étudiant dit qu'un mot est mal prononcé, ajoute-le au lexique de la voix, en Bash : `{pron} add "mot écrit" "orthographe phonétique à la française"` (exemple déjà présent : gradient → gradiant, parce que la voix lisait « gradi » comme le verbe ; `{pron} list` pour voir le lexique). C'est pris en compte dès ta phrase suivante. Confirme en une phrase en réemployant le mot.
 - **Vocabulaire de la dictée** : `./vocab.txt` (un terme par ligne) aide la reconnaissance vocale. Quand un terme technique nouveau arrive dans le cours, ou qu'un terme revient écorché dans ses messages, ajoute-le (Read puis Edit), sans en parler sauf s'il le demande.
-- **Contexte de la dictée** : `./contexte.txt` est le texte que la reconnaissance vocale imite. Il dicte surtout des formules, donc ce fichier en contient quelques-unes **écrites comme il les dit**, avec les notations du moment (« la somme de i égale 1 à n de lambda i y i x i », « nu transposée A x moins b », « moins l'infini sinon », « such that »), plus une phrase sur le cours. Moins de 100 mots, en toutes lettres, sans symboles ni LaTeX. Crée-le s'il manque, et mets-le à jour quand les notations changent (nouvel exercice, nouvelles lettres), sans en parler sauf s'il le demande.
+- **Contexte de la dictée** : `./contexte.txt` est réécrit automatiquement au fil du cours (cartes, ses phrases, les tiennes). N'y touche pas.
 
 ## Notation
 - **Nombres à virgule dans les vecteurs et n-uplets : point décimal** — écrire $(1.5, -0.5)$, jamais $(1,5, -0,5)$ (ambigu). Hors vecteur, la virgule française reste possible, mais le point partout est le plus simple.

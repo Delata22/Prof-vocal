@@ -7,7 +7,7 @@ WebSocket /ws :
                       JSON {t: start | barge | text | latency | misfire}
   serveur -> client : JSON {t: state | user | gen | say | tool | done | error | info}
 """
-import argparse, asyncio, base64, json, os, re, sys, time
+import argparse, asyncio, base64, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -212,6 +212,82 @@ class Ears:
         # légitimement « plus », « zéro »… (« 1 plus 2 plus 3 » était rejeté avec l'ancien seuil de 30 %).
         top = max((ws.count(w) for w in set(ws)), default=0)
         return top >= 8 and top / len(ws) > 0.5
+
+
+# ---------------- contexte de la dictée, écrit automatiquement ----------------
+
+class DictationContext:
+    """Écrit sessions/<slug>/contexte.txt (le texte que Whisper imite) à partir du cours lui-même : cartes du
+    tableau, phrases de l'élève, réponses du prof. Une petite IA (Claude Haiku, sans outils) le réécrit au
+    démarrage puis au fil du cours (toutes les 4 questions, ou dès que 2 cartes sont arrivées), en arrière-plan.
+    Une ligne « # fixe » dans le fichier le protège (contexte écrit à la main)."""
+    EVERY_TURNS, EVERY_CARDS, MIN_GAP = 4, 2, 90
+
+    def __init__(self, slug, topic, exe):
+        self.slug, self.topic, self.exe = slug, topic, exe
+        self.path = SESS / slug / "contexte.txt"
+        self.turns, self.cards_seen, self.last, self.busy = 0, None, 0.0, False
+
+    def cards(self):
+        try:
+            return json.loads((DATA / "sessions" / self.slug / "cahier.json").read_text()).get("cards", [])
+        except (OSError, ValueError):
+            return []
+
+    def maybe(self, history, force=False):
+        """À appeler après chaque question de l'élève (et au démarrage, force=True)."""
+        self.turns += 1
+        n = len(self.cards())
+        due = force or self.turns >= self.EVERY_TURNS or (self.cards_seen is not None and n - self.cards_seen >= self.EVERY_CARDS)
+        if not due or self.busy or time.time() - self.last < (0 if force else self.MIN_GAP):
+            return
+        try:
+            if "# fixe" in self.path.read_text():
+                return
+        except OSError:
+            pass
+        self.busy, self.turns, self.cards_seen, self.last = True, 0, n, time.time()
+        threading.Thread(target=self.write, args=(list(history),), daemon=True).start()
+
+    def write(self, history):
+        try:
+            cards = self.cards()
+            mat = []
+            for c in cards[-14:]:
+                body = c.get("body") or " ; ".join(l.get("l", "") + " " + l.get("why", "") for l in c.get("lines", []) if isinstance(l, dict))
+                mat.append(f"[{c.get('id')}] {c.get('title', '')} : {str(body)[:500]}")
+            said = [t for who, t in history if who == "élève"][-12:]
+            prof = [t for who, t in history if who == "prof"][-15:]
+            try:
+                old = parse_contexte(self.path.read_text())
+            except OSError:
+                old = ""
+            req = (f"Cours : {self.topic}.\n\nCartes récentes du tableau (Markdown, LaTeX) :\n" + "\n".join(mat)
+                   + "\n\nPhrases récentes de l'élève, telles que la reconnaissance vocale les a transcrites (avec ses erreurs) :\n"
+                   + "\n".join(f"- {t}" for t in said)
+                   + "\n\nPhrases récentes du prof :\n" + "\n".join(f"- {t}" for t in prof[-8:])
+                   + (f"\n\nContexte actuel :\n{old}" if old else "")
+                   + "\n\nÉcris le nouveau contexte. Réponds UNIQUEMENT par le paragraphe.")
+            sysp = ("Tu écris le texte de contexte (initial prompt) de Whisper, la reconnaissance vocale d'un étudiant français "
+                    "qui dicte surtout des formules à un prof. Whisper imite le style et l'orthographe de ce texte. Écris UN paragraphe "
+                    "de 60 à 100 mots, en français, à la première personne, comme l'étudiant parle : les formules et notations du "
+                    "moment écrites en toutes lettres comme il les dit (« la somme de i égale 1 à n de x i », « e puissance j deux pi f t », "
+                    "« le SNR en décibels »), les termes techniques et sigles du cours avec leur bonne orthographe (corrige ceux que la "
+                    "transcription a écorchés), les lettres et symboles qu'il emploie. Ni LaTeX, ni symboles, ni Markdown, ni liste.")
+            r = subprocess.run([self.exe, "-p", "--model", "claude-haiku-5-5", "--tools", "", "--no-session-persistence",
+                                "--strict-mcp-config", "--system-prompt", sysp], input=req, capture_output=True, text=True,
+                               timeout=120, cwd=str(SESS / self.slug))
+            txt = " ".join(r.stdout.split()).strip().strip('"«» ')
+            if r.returncode or not (20 < len(txt) < 900):
+                log(f"contexte de la dictée : échec ({r.returncode}) {(r.stderr or r.stdout)[:200]!r}")
+                return
+            self.path.write_text("# Contexte de la dictée, réécrit automatiquement au fil du cours "
+                                 f"({time.strftime('%Y-%m-%d %H:%M')}). Mettre une ligne « # fixe » pour le garder tel quel.\n" + txt + "\n")
+            log(f"contexte de la dictée mis à jour : {txt[:200]}")
+        except Exception as e:
+            log(f"contexte de la dictée : erreur {e!r}")
+        finally:
+            self.busy = False
 
 
 # ---------------- voix : Piper ----------------
@@ -850,6 +926,8 @@ class Prof:
         self.ears = Ears(a.whisper, a.compute, a.topic, a.slug, a.beam)
         self.voice = Voice()
         self.brain = make_brain(a, self.on_brain)
+        self.dctx = DictationContext(a.slug, a.topic, ai_status()["found"]["claude"] or ai_status()["claude_bin"])
+        self.dctx.maybe(self.history, force=True)     # au démarrage : contexte tiré des cartes déjà au tableau
         self.gen_text = ""
         self.cues = []
         self.outbox, self.gen_done = [], False   # phrases envoyées, pas encore jouées par la page
@@ -903,6 +981,7 @@ class Prof:
         if images:          # photos collées / déposées : sauvées dans sessions/<slug>/images, jointes au message
             msg += "\n" + "\n".join(f"[photo jointe : {p}]" for p, _mt, _b in images)
         self.history.append(("élève", text))
+        self.dctx.maybe(self.history)
         await self.state("thinking")
         await self.brain.ask(self.gen, msg, [(mt, b) for _p, mt, b in images])
 
