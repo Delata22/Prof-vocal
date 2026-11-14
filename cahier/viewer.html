@@ -431,7 +431,10 @@ function thumbEl(c) {
   return t;
 }
 // ---------- ce que l'élève montre : sélection à la souris ----------
-function setSelection(sel) {
+let lastCopy = "";     // texte à copier de la sélection montrée (la mise en évidence efface la vraie sélection)
+function setSelection(sel, copy = "") {
+  lastCopy = sel ? copy : "";
+  if (parent !== window) parent.postMessage({cahierCopyText: lastCopy}, "*");   // la page du prof copie (Ctrl+C arrive chez elle)
   data.state.selection = sel; selKey = null; render(); post();
 }
 document.addEventListener("mouseup", () => setTimeout(() => {
@@ -444,14 +447,33 @@ document.addEventListener("mouseup", () => setTimeout(() => {
   // dans une formule, le texte sélectionné est illisible : on joint la source LaTeX des formules touchées
   const tex = [...card.querySelectorAll(".katex")].filter(k => r.intersectsNode(k))
     .map(k => (k.querySelector("annotation") || {}).textContent).filter(Boolean).join(" ; ");
-  setSelection({id: card.dataset.id, ligne, texte: t.slice(0, 300), tex: tex.slice(0, 500) || null});
-  // on ne retire pas la sélection : elle doit rester copiable (Ctrl+C). Le surlignage bleu attend qu'elle disparaisse.
+  // le texte à copier est pris maintenant : la mise en évidence redessine la carte et efface la sélection
+  setSelection({id: card.dataset.id, ligne, texte: t.slice(0, 300), tex: tex.slice(0, 500) || null}, copyText(r));
 }, 0));
+// texte à copier : les formules KaTeX (illisibles en texte brut) redeviennent leur source $…$
+function copyText(r) {
+  const box = document.createElement("div"); box.append(r.cloneContents());
+  box.querySelectorAll(".katex-display, .katex").forEach(k => {
+    if (!box.contains(k)) return;          // déjà remplacée avec sa formule englobante
+    const a = k.querySelector("annotation"), disp = k.classList.contains("katex-display");
+    k.replaceWith(a ? (disp ? `$$${a.textContent}$$` : `$${a.textContent}$`) : k.textContent);
+  });
+  box.querySelectorAll("p, li, tr, div, h3, h4").forEach(b => b.append("\n"));
+  return box.textContent.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+// copie faite (ici ou depuis la page du prof) : il voulait copier, pas montrer
+function copied() { if (data && data.state.selection) setSelection(null); }
+document.addEventListener("copy", e => {      // tableau ouvert seul dans un navigateur : Ctrl+C arrive ici
+  const t = liveSelection() ? copyText(window.getSelection().getRangeAt(0)) : lastCopy;
+  if (!t) return;
+  e.clipboardData.setData("text/plain", t); e.preventDefault(); copied();
+});
+window.addEventListener("message", e => { if (e.data && e.data.cahierCopied) copied(); });
 window.addEventListener("message", e => {        // sélection faite dans une animation
   const m = e.data && e.data.cahierSel; if (!m) return;
   const f = [...document.querySelectorAll("#stage iframe")].find(x => x.contentWindow === e.source);
   const card = f && f.closest(".card"); if (!card) return;
-  setSelection({id: card.dataset.id, ligne: null, texte: String(m).slice(0, 300), tex: null});
+  setSelection({id: card.dataset.id, ligne: null, texte: String(m).slice(0, 300), tex: null}, String(m));
 });
 document.querySelector("#selchip button").onclick = () => setSelection(null);
 let selKey = null;
@@ -478,6 +500,7 @@ function showSelection() {
   document.querySelectorAll("#stage mark.umk").forEach(m => m.replaceWith(...m.childNodes));
   document.querySelectorAll("#stage .umk").forEach(x => x.classList.remove("umk"));
   chip.classList.toggle("on", !!sel);
+  if (!sel && lastCopy) { lastCopy = ""; if (parent !== window) parent.postMessage({cahierCopyText: ""}, "*"); }
   if (!sel) return;
   chip.querySelector("span").textContent = `Tu montres : ${sel.id}${sel.ligne ? " · ligne " + sel.ligne : ""} ${sel.tex ? "(formule)" : "« " + sel.texte + " »"}`;
   const card = document.querySelector(`#stage > .card[data-id="${CSS.escape(sel.id)}"]`); if (!card) return;

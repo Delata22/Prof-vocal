@@ -953,6 +953,22 @@ $("mute").onclick = () => {
 // erreur dans une scène du tableau (carte iframe → fenêtre du haut) : transmise au prof, qui ne voit pas cet écran
 const sceneErrs = [];          // gardées jusqu'à la connexion (une scène peut échouer avant)
 function flushSceneErrs() { while (sceneErrs.length && ws && ws.readyState === 1) ws.send(JSON.stringify(sceneErrs.shift())); }
+// Copier depuis le tableau : il garde sa sélection, mais le clavier revient ici (pour espace), donc Ctrl+C
+// arrive ici. Le tableau nous envoie le texte sélectionné ; on le copie, et la sélection n'est plus « montrée ».
+let boardCopy = "";
+addEventListener("message", e => {
+  if (e.data && typeof e.data.cahierCopyText === "string" && e.source === $("board").contentWindow) boardCopy = e.data.cahierCopyText;
+});
+document.addEventListener("keydown", e => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "c" || !boardCopy) return;
+  if (["INPUT", "TEXTAREA"].includes(e.target.tagName) || String(window.getSelection() || "")) return;
+  e.preventDefault();
+  const t = boardCopy, done = () => { $("board").contentWindow.postMessage({cahierCopied: 1}, "*"); dbg("copié depuis le tableau :", t.slice(0, 80)); };
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(done).catch(() => {
+    const ta = document.createElement("textarea"); ta.value = t; document.body.append(ta); ta.select();
+    document.execCommand("copy"); ta.remove(); done();
+  });
+}, true);
 addEventListener("message", e => {
   if (!e.data || !e.data.sceneError) return;
   sceneErrs.push({t: "scene_error", text: String(e.data.sceneError).slice(0, 400), scene: String(e.data.scene || "").slice(0, 120)});
