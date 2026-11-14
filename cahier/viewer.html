@@ -33,6 +33,9 @@ header .lay button.on{background:var(--accbg);color:var(--acc);border-color:var(
 #strip .lbl{color:var(--muted);font-size:12px}
 .thumb{position:relative;height:150px;border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden;cursor:pointer;flex:none;transition:border-color .2s}
 .thumb:hover{border-color:var(--acc)}
+/* carte au tableau : elle reste à sa place dans la bande, surlignée */
+.thumb.onstage{border:2px solid var(--acc);box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 22%,transparent)}
+.thumb.onstage .tt{background:color-mix(in srgb,var(--acc) 16%,var(--card))}
 .thumb .tt{position:absolute;inset:0 0 auto 0;padding:5px 30px 5px 9px;font-size:12px;background:var(--card);border-bottom:1px solid var(--line);z-index:2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .thumb .tt b{color:var(--acc);font-weight:500;margin-right:5px}
 .thumb .x{position:absolute;top:2px;right:3px;z-index:3;border:0;padding:0 6px;font-size:15px;color:var(--muted)}
@@ -315,7 +318,7 @@ stripEl.addEventListener("drop", e => {
   st.main = st.main.filter(i => i !== id);
   if (!st.main.length) { const o = [...st.pinned].reverse().find(i => i !== id); if (o) st.main = [o]; }
   // ordre affiché = pinned à l'envers (la plus récente en haut)
-  let shown = [...st.pinned].reverse().filter(i => !st.main.includes(i) && i !== id);
+  let shown = [...st.pinned].reverse().filter(i => i !== id);       // la bande montre aussi les cartes au tableau
   let k = t ? shown.indexOf(t.dataset.id) : -1;
   k = k < 0 ? shown.length : k + (after ? 1 : 0);
   shown.splice(k, 0, id);
@@ -611,15 +614,16 @@ function render() {
     if (c.kind === "animation" && (st.replay[id] || 0) !== replayed[id]) { replayed[id] = st.replay[id] || 0; el._iframe.srcdoc = withTheme(c.body); }
   }
 
-  const rest = st.pinned.filter(i => !main.includes(i) && card(i));
-  const tk = rest.map(i => i + ":" + card(i).t).join(",");
+  // la bande garde toutes les cartes ouvertes, celles au tableau comprises (surlignées) : rien ne disparaît puis revient
+  const rest = [...st.pinned, ...main.filter(i => !st.pinned.includes(i))].filter(i => card(i));
+  const tk = rest.map(i => i + ":" + card(i).t + (main.includes(i) ? "*" : "")).join(",");
   if (tk !== stripKey) {
     stripKey = tk;
     const strip = document.getElementById("strip"); strip.innerHTML = "";
     document.getElementById("main").classList.toggle("nostrip", !rest.length);
     if (rest.length) { const l = document.createElement("div"); l.className = "lbl"; l.textContent = "Ouvertes"; strip.append(l); }
     const shown = [...rest].reverse();
-    for (const id of shown.slice(0, 12)) strip.append(thumbEl(card(id)));
+    for (const id of shown.slice(0, 12)) { const t = thumbEl(card(id)); t.classList.toggle("onstage", main.includes(id)); if (main.includes(id)) t.title += " (au tableau)"; strip.append(t); }
     if (shown.length > 12) {
       const more = document.createElement("div"); more.className = "lbl";
       more.textContent = `+ ${shown.length - 12} autres ouvertes (dans la frise)`; strip.append(more);
