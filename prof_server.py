@@ -191,8 +191,8 @@ class Ears:
         txt = " ".join(s.text.strip() for s in kept).strip()
         # enregistrement long (> 3 s) entièrement rejeté : Whisper a pu partir en vrille (repli à température > 0,
         # ou contexte recopié). Un 2e essai sans contexte récupère en général la vraie phrase.
-        if not txt and segs and use_prompt and len(audio) > 3 * 16000:
-            log("whisper : tout rejeté sur un enregistrement long, 2e essai sans contexte")
+        if not txt and use_prompt and len(audio) > 3 * 16000:      # même sans aucun segment (contexte qui égare Whisper)
+            log("whisper : rien de retenu sur un enregistrement long, 2e essai sans contexte")
             return self.transcribe(audio, maths=maths, use_prompt=False, beam=beam)
         # Whisper recopie le prompt sur un son trop court ; mais une vraie phrase peut ressembler à un bout
         # du prompt (« soit n un entier ») : on ne rejette qu'une copie d'au moins la moitié du prompt.
@@ -258,6 +258,9 @@ class DictationContext:
                 mat.append(f"[{c.get('id')}] {c.get('title', '')} : {str(body)[:500]}")
             said = [t for who, t in history if who == "élève"][-12:]
             prof = [t for who, t in history if who == "prof"][-15:]
+            if not cards and len(said) < 2:      # rien sur quoi s'appuyer : l'IA inventerait (contexte générique en attendant)
+                log("contexte de la dictée : pas encore assez de matière (cartes, phrases), contexte générique")
+                return
             try:
                 old = parse_contexte(self.path.read_text())
             except OSError:
@@ -273,11 +276,16 @@ class DictationContext:
                     "de 60 à 100 mots, en français, à la première personne, comme l'étudiant parle : les formules et notations du "
                     "moment écrites en toutes lettres comme il les dit (« la somme de i égale 1 à n de x i », « e puissance j deux pi f t », "
                     "« le SNR en décibels »), les termes techniques et sigles du cours avec leur bonne orthographe (corrige ceux que la "
-                    "transcription a écorchés), les lettres et symboles qu'il emploie. Ni LaTeX, ni symboles, ni Markdown, ni liste.")
+                    "transcription a écorchés), les lettres et symboles qu'il emploie. Ni LaTeX, ni symboles, ni Markdown, ni liste, "
+                    "ni guillemets. N'invente rien : uniquement des notions, notations et formules présentes dans le matériau fourni.")
+            # --setting-sources "" : sans les consignes personnelles de l'utilisateur (CLAUDE.md, mémoire), qu'elle recopiait
             r = subprocess.run([self.exe, "-p", "--model", "claude-haiku-5-5", "--tools", "", "--no-session-persistence",
-                                "--strict-mcp-config", "--system-prompt", sysp], input=req, capture_output=True, text=True,
+                                "--strict-mcp-config", "--setting-sources", "", "--system-prompt", sysp], input=req, capture_output=True, text=True,
                                timeout=120, cwd=str(SESS / self.slug))
             txt = " ".join(r.stdout.split()).strip().strip('"«» ')
+            if re.search(r"[\\^_{}$<>]", txt):      # du LaTeX ou du code : Whisper déraille (« Au. Je de ce que le je t-fais. »)
+                log(f"contexte de la dictée : refusé (symboles) : {txt[:160]!r}")
+                return
             if r.returncode or not (20 < len(txt) < 900):
                 log(f"contexte de la dictée : échec ({r.returncode}) {(r.stderr or r.stdout)[:200]!r}")
                 return
